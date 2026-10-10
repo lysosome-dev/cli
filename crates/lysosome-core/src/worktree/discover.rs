@@ -96,15 +96,13 @@ pub(crate) fn discover(roots: &[PathBuf], max_depth: usize, progress: &dyn Progr
                     repo: main.clone(),
                     name: name.to_string_lossy().into_owned(),
                     missing_path: wt_path,
-                    cleanup: Cleanup {
-                        command: vec![
-                            "git".into(),
-                            "-C".into(),
-                            main.to_string_lossy().into_owned(),
-                            "worktree".into(),
-                            "prune".into(),
-                        ],
-                    },
+                    cleanup: Cleanup::command(vec![
+                        "git".into(),
+                        "-C".into(),
+                        main.to_string_lossy().into_owned(),
+                        "worktree".into(),
+                        "prune".into(),
+                    ]),
                 });
             }
         }

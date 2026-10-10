@@ -156,7 +156,7 @@ impl Worktree {
                     "size_bytes": a.size_bytes,
                 })).collect::<Vec<_>>(),
             }),
-            cleanup: self.cleanup_command().map(|command| Cleanup { command }),
+            cleanup: self.cleanup_command().map(Cleanup::command),
         }
     }
 }
