@@ -210,4 +210,4 @@ Use bytes in JSON (humanize only in the table output). Add a JSON-schema file un
 - The Mac app, background monitoring, scheduling, alerts (paid product, later).
 - Windows support.
 - Team/fleet features.
-- Squash-merge detection via the GitHub API (possible later with `gh`; squash-merged branches currently show as REVIEW, which is the safe default).
+- Squash-merge detection beyond `gh`: since 0.3.0, when `gh` is installed and signed in, a dormant worktree that is REVIEW only because of commit safety becomes REMOVABLE if a merged PR's `headRefOid` equals its HEAD (re-verified by `clean`; `--no-gh` / `--offline` turn it off). Other forges (GitLab, Bitbucket) and API access without `gh` are out of scope.

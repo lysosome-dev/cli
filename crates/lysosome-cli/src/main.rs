@@ -77,7 +77,8 @@ Nothing is ever changed.";
 
 const WORKTREE_HELP: &str = "\
 Statuses:
-  REMOVABLE  dormant, clean, and merged into the default branch or fully pushed
+  REMOVABLE  dormant, clean, and merged into the default branch, fully pushed,
+             or its exact HEAD was squash-merged in a GitHub PR (needs `gh`)
   REVIEW     dormant but dirty, locked, or holding commits found nowhere else
   ORPHAN     its parent repository was moved or deleted
   ACTIVE     used within --days (listed with --all)
@@ -87,6 +88,12 @@ Examples:
   lysosome worktrees --days 7 --all       Shorter window, list active ones too
   lysosome worktrees --json > scan.json   Versioned JSON (schema/lysosome.schema.json)
   lysosome worktrees --profile            Show walk / git / size timings on stderr
+
+Squash merges: git can't tell that a branch was squash-merged on GitHub, so
+when `gh` is installed and signed in, worktrees that are REVIEW only because
+of unpushed commits are looked up (`gh pr list --state merged --head <branch>`).
+If a merged PR's last commit is exactly the worktree's HEAD, it is REMOVABLE.
+Skip with --no-gh or --offline.
 
 Nothing is ever changed. Suggested `git worktree remove` commands are printed
 for you to review and run yourself.";
@@ -234,6 +241,34 @@ pub struct ScanArgs {
     /// Print the versioned JSON report instead of a table
     #[arg(long)]
     pub json: bool,
+
+    #[command(flatten)]
+    pub net: NetArgs,
+}
+
+impl ScanArgs {
+    /// Whether to ask GitHub about squash-merged worktrees.
+    pub fn github(&self) -> bool {
+        self.net.github()
+    }
+}
+
+/// Network switches shared by `scan`, `worktrees` and `clean`.
+#[derive(Debug, Clone, Default, Args)]
+pub struct NetArgs {
+    /// Don't ask GitHub (via `gh`) whether REVIEW worktrees were squash-merged
+    #[arg(long)]
+    pub no_gh: bool,
+
+    /// Never use the network (today this only skips the `gh` lookups)
+    #[arg(long)]
+    pub offline: bool,
+}
+
+impl NetArgs {
+    pub fn github(&self) -> bool {
+        !(self.no_gh || self.offline)
+    }
 }
 
 fn main() -> ExitCode {

@@ -100,6 +100,9 @@ pub struct CleanArgs {
     /// Maximum folder depth to search for repositories
     #[arg(long, value_name = "N", default_value_t = lysosome_core::worktree::DEFAULT_MAX_DEPTH)]
     pub depth: usize,
+
+    #[command(flatten)]
+    pub net: crate::NetArgs,
 }
 
 fn parse_age(s: &str) -> Result<u64, String> {
@@ -193,6 +196,7 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
     let mut ctx = ScanContext::new(roots, home.clone());
     ctx.dormant_after_days = args.days;
     ctx.max_depth = args.depth;
+    ctx.github = args.net.github();
     ctx.progress = match &spinner {
         Some(s) => s,
         None => &NoProgress,
@@ -340,6 +344,13 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
     };
     let mut ex = Executor::new(trasher, home.clone(), Some(&log));
     ex.dormant_after_days = args.days;
+    // Worktrees planned because their PR was squash-merged are re-verified
+    // with gh (and skipped without it).
+    ex.gh = args
+        .net
+        .github()
+        .then(lysosome_core::worktree::Gh::from_process)
+        .flatten();
     if let Some(secs) = std::env::var("LYSOSOME_CLEAN_TIMEOUT_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())

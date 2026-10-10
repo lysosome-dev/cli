@@ -14,8 +14,9 @@ use crate::model::Status;
 use crate::projects;
 use crate::size::Sizer;
 use crate::worktree::analyze::{self, RepoCache};
-use crate::worktree::classify::classify;
+use crate::worktree::classify::{classify, commit_safety_only};
 use crate::worktree::discover::{self, Candidate};
+use crate::worktree::gh::{Gh, Verdict};
 
 use super::process;
 
@@ -27,6 +28,9 @@ pub(crate) struct Ctx<'a> {
     pub dormant_after_days: u64,
     pub now: SystemTime,
     pub path_env: Option<&'a OsString>,
+    /// `gh` for re-verifying squash merges; `None` when unavailable or
+    /// turned off (such items are then skipped).
+    pub gh: Option<&'a Gh>,
 }
 
 impl Ctx<'_> {
@@ -296,8 +300,22 @@ pub(crate) fn worktree(
     if !pre.gitdir_exists {
         return Err("its git metadata is gone (orphan)".into());
     }
-    let a = analyze::analyze(ctx.git()?, &RepoCache::default(), &cand, &pre, ctx.now);
+    let git = ctx.git()?;
+    let a = analyze::analyze(git, &RepoCache::default(), &cand, &pre, ctx.now);
     let (status, reason) = classify(&a.facts, ctx.dormant_after_days);
+    // A squash-merged PR can vouch for commit-safety REVIEW worktrees; ask
+    // GitHub again rather than trusting the scan.
+    if commit_safety_only(&a.facts, ctx.dormant_after_days) {
+        if let (Some(gh), Some(branch)) = (ctx.gh, a.branch.as_deref()) {
+            if let v @ Verdict::SquashMerged(_) = gh.verdict(git, path, branch) {
+                return Ok((
+                    Status::Removable,
+                    v.reason().unwrap_or_default(),
+                    pre.main_repo,
+                ));
+            }
+        }
+    }
     Ok((status, reason, pre.main_repo))
 }
 

@@ -17,6 +17,7 @@ use super::{worktree_remove_argv, ActionKind, Guard, Plan, PlanItem};
 use crate::git::{Git, REPO_ENV_VARS};
 use crate::model::Status;
 use crate::worktree::discover;
+use crate::worktree::gh::Gh;
 
 /// Message (prefix) of items not acted on because of an interrupt.
 pub const INTERRUPTED: &str = "not attempted: interrupted";
@@ -187,6 +188,9 @@ pub struct Executor<'a> {
     /// Set (e.g. by a Ctrl-C handler) to stop after the current item; the
     /// remaining items are reported `skipped: not attempted: interrupted`.
     pub stop: Option<&'a AtomicBool>,
+    /// `gh` to re-verify worktrees planned because their PR was
+    /// squash-merged. `None` (the default): such worktrees are skipped.
+    pub gh: Option<Gh>,
 }
 
 impl<'a> Executor<'a> {
@@ -201,6 +205,7 @@ impl<'a> Executor<'a> {
             git_env: Vec::new(),
             log,
             stop: None,
+            gh: None,
         }
     }
 
@@ -251,6 +256,7 @@ impl<'a> Executor<'a> {
                         dormant_after_days: self.dormant_after_days,
                         now: SystemTime::now(),
                         path_env: self.path_env.as_ref(),
+                        gh: self.gh.as_ref(),
                     };
                     let mut r = self.one(&ctx, item, plan.permanent);
                     // Ctrl-C can kill a re-check's git process; a skip then
@@ -309,6 +315,12 @@ impl<'a> Executor<'a> {
                 let (status, reason, main) = recheck::worktree(ctx, path, gitdir)
                     .map_err(|e| format!("changed since scan: {e}"))?;
                 if status != Status::Removable {
+                    if item.reason.contains("squash-merged in PR") && ctx.gh.is_none() {
+                        return Err(
+                            "gh is not available to re-verify the squash merge (install and sign in to gh, or drop --no-gh / --offline)"
+                                .into(),
+                        );
+                    }
                     return Err(changed(status, &reason));
                 }
                 if !main

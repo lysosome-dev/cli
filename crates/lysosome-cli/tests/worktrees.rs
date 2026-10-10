@@ -524,3 +524,188 @@ fn hostile_git_environment_cannot_make_work_look_clean() {
     }
     assert_eq!(got["app-dirty"]["details"]["untracked"], 1);
 }
+
+/// A fake `gh` on PATH: logs every call, says it is signed in, and answers
+/// `pr list` with `response` (a JSON array).
+struct FakeGh {
+    bin: PathBuf,
+    log: PathBuf,
+    response: PathBuf,
+}
+
+impl FakeGh {
+    fn new(fx: &Fixture) -> FakeGh {
+        let bin = fx.dest.join("fake-bin");
+        fs::create_dir_all(&bin).unwrap();
+        let log = fx.dest.join("gh.log");
+        let response = fx.dest.join("gh-response.json");
+        fs::write(&response, "[]").unwrap();
+        let gh = bin.join("gh");
+        fs::write(
+            &gh,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$1\" in\n  auth) exit 0;;\n  pr) cat '{}';;\n  *) exit 1;;\nesac\n",
+                log.display(),
+                response.display()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+        // The main repo's origin "lives on GitHub" (the scan never fetches).
+        let out = Command::new("git")
+            .args(["-C", fx.code().join("app").to_str().unwrap()])
+            .args([
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/acme/app.git",
+            ])
+            .env("HOME", fx.dest.join("home"))
+            .env("GIT_CONFIG_GLOBAL", fx.dest.join("gitconfig"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        FakeGh { bin, log, response }
+    }
+
+    fn respond(&self, number: u64, head: &str) {
+        fs::write(
+            &self.response,
+            format!(
+                r#"[{{"number":{number},"headRefOid":"{head}","mergedAt":"2026-01-01T00:00:00Z","url":"https://github.com/acme/app/pull/{number}"}}]"#
+            ),
+        )
+        .unwrap();
+    }
+
+    fn calls(&self) -> Vec<String> {
+        fs::read_to_string(&self.log)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn path_env(&self) -> std::ffi::OsString {
+        let mut p = std::ffi::OsString::from(&self.bin);
+        p.push(":");
+        p.push(std::env::var_os("PATH").unwrap_or_default());
+        p
+    }
+}
+
+fn rev(fx: &Fixture, wt: &str, rev: &str) -> String {
+    let out = Command::new("git")
+        .args(["-C", fx.code().join(wt).to_str().unwrap(), "rev-parse", rev])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn scan_with_gh(fx: &Fixture, gh: &FakeGh, extra: &[&str]) -> BTreeMap<String, Value> {
+    let code = fx.code();
+    let mut args = vec!["worktrees", code.to_str().unwrap(), "--json"];
+    args.extend_from_slice(extra);
+    let out = fx
+        .lysosome()
+        .env("PATH", gh.path_env())
+        .args(&args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let schema: Value = serde_json::from_str(
+        &fs::read_to_string(repo_root().join("schema/lysosome.schema.json")).unwrap(),
+    )
+    .unwrap();
+    let validator = jsonschema::draft202012::new(&schema).unwrap();
+    assert!(validator.is_valid(&report), "schema violation");
+    by_name(&report)
+}
+
+#[test]
+fn squash_merged_worktrees_are_removable_when_github_vouches_for_head() {
+    let fx = Fixture::new();
+    let gh = FakeGh::new(&fx);
+    let head = rev(&fx, "app-unpushed", "HEAD");
+    gh.respond(42, &head);
+    let wts = scan_with_gh(&fx, &gh, &[]);
+    let w = &wts["app-unpushed"];
+    assert_eq!(w["status"], "REMOVABLE", "{w}");
+    assert_eq!(w["reason"], "clean, squash-merged in PR #42");
+    assert_eq!(w["tier"], "regenerable");
+    assert_eq!(w["details"]["merged_pr"]["number"], 42);
+    assert_eq!(
+        w["details"]["merged_pr"]["url"],
+        "https://github.com/acme/app/pull/42"
+    );
+    assert_eq!(w["cleanup"]["command"][3], "worktree");
+    // Only commit-safety REVIEW worktrees are looked up; dirty, locked and
+    // REMOVABLE ones never are.
+    assert_eq!(wts["app-dirty"]["status"], "REVIEW");
+    assert_eq!(wts["app-locked"]["status"], "REVIEW");
+    assert!(wts["app-merged"]["details"]["merged_pr"].is_null());
+    let calls = gh.calls();
+    assert!(
+        calls
+            .iter()
+            .any(|c| c.starts_with("auth status --hostname github.com")),
+        "{calls:?}"
+    );
+    let lookups: Vec<&String> = calls.iter().filter(|c| c.starts_with("pr list")).collect();
+    assert_eq!(
+        lookups,
+        [&"pr list --repo github.com/acme/app --state merged --head unpushed --limit 30 --json number,headRefOid,mergedAt,url".to_string()],
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn a_merged_pr_with_another_head_keeps_review_with_a_better_reason() {
+    let fx = Fixture::new();
+    let gh = FakeGh::new(&fx);
+    // The PR was merged at the parent commit; one local commit came after.
+    gh.respond(7, &rev(&fx, "app-unpushed", "HEAD~1"));
+    let wts = scan_with_gh(&fx, &gh, &[]);
+    let w = &wts["app-unpushed"];
+    assert_eq!(w["status"], "REVIEW");
+    assert_eq!(
+        w["reason"],
+        "PR #7 was merged, but 1 local commit came after it"
+    );
+    assert!(w["details"]["merged_pr"].is_null());
+    assert!(w["cleanup"].is_null());
+
+    // A head that isn't in HEAD's history at all.
+    gh.respond(8, &"0".repeat(40));
+    let w = &scan_with_gh(&fx, &gh, &[])["app-unpushed"];
+    assert_eq!(w["status"], "REVIEW");
+    assert_eq!(
+        w["reason"],
+        "PR #8 was merged, but HEAD is not the commit that was merged"
+    );
+
+    // No merged PR: untouched.
+    fs::write(&gh.response, "[]").unwrap();
+    let w = &scan_with_gh(&fx, &gh, &[])["app-unpushed"];
+    assert_eq!(w["reason"], "1 unpushed commit, not merged");
+}
+
+#[test]
+fn no_gh_and_offline_never_run_gh() {
+    let fx = Fixture::new();
+    let gh = FakeGh::new(&fx);
+    gh.respond(42, &rev(&fx, "app-unpushed", "HEAD"));
+    for flag in ["--no-gh", "--offline"] {
+        let w = &scan_with_gh(&fx, &gh, &[flag])["app-unpushed"];
+        assert_eq!(w["status"], "REVIEW", "{flag}");
+        assert_eq!(w["reason"], "1 unpushed commit, not merged");
+    }
+    assert!(gh.calls().is_empty(), "{:?}", gh.calls());
+}

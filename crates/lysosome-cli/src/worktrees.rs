@@ -27,6 +27,7 @@ pub fn run(args: &WorktreesArgs, global: &GlobalArgs) -> Result<String> {
     let mut opts = ScanOptions::new(roots.clone());
     opts.dormant_after_days = args.days;
     opts.max_depth = args.depth;
+    opts.github = args.github();
 
     let err_color = ui::color_enabled(global.no_color, ui::stderr_is_tty());
     let warn = Painter::new(err_color);
@@ -130,11 +131,12 @@ fn render_profile(scan: &WorktreeScan, p: &Painter) -> String {
         p.dim("·"),
         p.bold(format!("{:.2}s", scan.stats.total.as_secs_f64())),
         p.dim(format!(
-            "        {} · {} · {} git calls on {} threads · {} size read errors",
+            "        {} · {} · {} git calls on {} threads · {} gh calls · {} size read errors",
             plural(scan.stats.dirs_visited, "folder", "folders"),
             plural(scan.worktrees.len() as u64, "worktree", "worktrees"),
             thousands(scan.stats.git_calls),
             lysosome_core::git::default_concurrency(),
+            thousands(scan.stats.gh_calls),
             thousands(scan.stats.size_errors),
         )),
     )

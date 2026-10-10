@@ -71,6 +71,19 @@ pub fn classify(f: &Facts, dormant_after_days: u64) -> (Status, String) {
     (Status::Removable, reason)
 }
 
+/// `REVIEW` *only* because of commit safety: dormant, unlocked, `git status`
+/// read and clean, but HEAD is neither merged nor fully pushed. These are
+/// the worktrees a squash-merged PR can vouch for (see `worktree::gh`).
+pub fn commit_safety_only(f: &Facts, dormant_after_days: u64) -> bool {
+    classify(f, dormant_after_days).0 == Status::Review
+        && !f.locked
+        && f.status_ok
+        && f.changed == 0
+        && f.untracked == 0
+        && f.merged_into.is_none()
+        && f.unpushed != Some(0)
+}
+
 /// Reason used for orphans (gitdir missing).
 pub const ORPHAN_REASON: &str = "parent repo moved or deleted";
 
@@ -131,6 +144,32 @@ mod tests {
         f.status_ok = false;
         f.merged_into = Some("main".into());
         assert_eq!(classify(&f, 30).0, Status::Review);
+    }
+
+    #[test]
+    fn only_commit_safety_reviews_can_be_vouched_for_by_a_pr() {
+        let mut f = dormant_clean();
+        f.unpushed = Some(2);
+        assert!(commit_safety_only(&f, 30));
+        f.has_remote = false;
+        f.unpushed = None;
+        assert!(commit_safety_only(&f, 30), "no remote and not merged");
+        for spoil in [
+            |f: &mut Facts| f.locked = true,
+            |f: &mut Facts| f.status_ok = false,
+            |f: &mut Facts| f.changed = 1,
+            |f: &mut Facts| f.untracked = 1,
+            |f: &mut Facts| f.idle_days = Some(1),
+            |f: &mut Facts| f.merged_into = Some("main".into()),
+        ] {
+            let mut g = f.clone();
+            spoil(&mut g);
+            assert!(!commit_safety_only(&g, 30), "{g:?}");
+        }
+        assert!(
+            !commit_safety_only(&dormant_clean(), 30),
+            "REMOVABLE already"
+        );
     }
 
     #[test]

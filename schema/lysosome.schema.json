@@ -257,6 +257,20 @@
           "description": "Bytes in git-ignored build/dependency folders inside the worktree (included in size_bytes).",
           "$ref": "#/$defs/bytes"
         },
+        "merged_pr": {
+          "description": "The merged GitHub pull request whose last commit (headRefOid) is exactly this worktree's HEAD, found with `gh` (installed and signed in; skipped with --no-gh / --offline). Set only when that made the worktree REMOVABLE (reason \"clean, squash-merged in PR #N\"); null otherwise. Added in 0.3.0; may be absent in older output.",
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["number", "url"],
+              "properties": {
+                "number": { "type": "integer", "minimum": 1 },
+                "url": { "type": "string", "minLength": 1 }
+              }
+            },
+            { "type": "null" }
+          ]
+        },
         "artifacts": {
           "type": "array",
           "items": {

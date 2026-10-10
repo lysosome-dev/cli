@@ -20,6 +20,16 @@ All notable changes to this project are documented here. The format follows
   maintainers add a token, so `cargo install lysosome` will work.
 - Issue and pull request templates, a code of conduct, Dependabot, and a
   `cargo-deny` CI check (licenses, RustSec advisories, duplicate crates).
+- Squash-merge awareness (#18): when `gh` is installed and signed in, dormant
+  worktrees that are `REVIEW` only because their commits look unpushed are
+  looked up with `gh pr list --state merged --head <branch>`. If a merged
+  PR's last commit is exactly the worktree's HEAD (and it is clean and
+  unlocked) it becomes `REMOVABLE` ("clean, squash-merged in PR #123", JSON
+  `details.merged_pr {number, url}`); a merged PR with another head keeps
+  `REVIEW` with a clearer reason. `clean` re-verifies with `gh` before
+  removing and skips the worktree if `gh` is unavailable. `gh` runs
+  sandboxed (from `/`, never prompting, timeouts, at most 4 at a time).
+  New flags `--no-gh` and `--offline` on `scan`, `worktrees` and `clean`.
 
 ## [0.2.1] - 2026-10-10
 
