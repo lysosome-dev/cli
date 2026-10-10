@@ -493,6 +493,17 @@ fn render_plan(
             ))
         )
         .ok();
+        if rows
+            .iter()
+            .any(|(i, _)| i.action == ActionKind::WorktreeRemove)
+        {
+            writeln!(
+                o,
+                "    {}",
+                p.dim("each: git -C <main repo> worktree remove <path> (no --force), then git worktree prune; branches are kept")
+            )
+            .ok();
+        }
         for (i, c) in rows {
             writeln!(
                 o,
@@ -504,10 +515,6 @@ fn render_plan(
             )
             .ok();
             let note = match i.action {
-                ActionKind::WorktreeRemove => Some(format!(
-                    "{} · then git worktree prune · branch kept",
-                    argv_display(&i.command, paths)
-                )),
                 _ if i.status == Status::Review => Some(format!(
                     "inside a REVIEW worktree ({}); only this ignored folder goes",
                     i.project
@@ -515,7 +522,6 @@ fn render_plan(
                         .map(|x| paths.short(x))
                         .unwrap_or_default()
                 )),
-                ActionKind::Command if !i.name.is_empty() => Some(i.name.clone()),
                 _ => None,
             };
             if let Some(n) = note {
