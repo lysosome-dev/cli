@@ -40,11 +40,12 @@ fn style(template: &str) -> ProgressStyle {
 impl Progress for Spinner {
     fn start(&self, phase: Phase, total: Option<u64>) {
         let label = match phase {
-            Phase::Walk => format!("Looking for worktrees in {}", self.walking),
+            Phase::Walk => format!("Looking for repositories in {}", self.walking),
             Phase::Git => "Reading git state".into(),
             Phase::Size => "Measuring disk usage".into(),
             Phase::Analyze => "Reading git state and sizes".into(),
             Phase::IgnoreCheck => "Checking ignored artifacts".into(),
+            Phase::Artifacts => "Measuring project artifacts".into(),
             _ => phase.to_string(),
         };
         self.pb.set_position(0);

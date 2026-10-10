@@ -3,6 +3,7 @@
 mod caches;
 mod completions;
 mod progress;
+mod scan;
 mod ui;
 mod worktrees;
 
@@ -17,9 +18,9 @@ const ABOUT: &str = "Find the disk your dev tools and coding agents left behind.
 const LONG_ABOUT: &str = "\
 Find the disk your dev tools and coding agents left behind.
 
-lysosome finds dormant git worktrees (and soon build artifacts, package
-caches, AI models, Docker and Xcode data) and labels every item by how safe
-it is to delete. Scanning is strictly read-only: it never deletes, moves or
+lysosome finds dormant git worktrees and the git-ignored dependencies and
+build output of idle projects (and soon package caches, AI models, Docker and
+Xcode data) and labels every item by how safe it is to delete. Scanning is strictly read-only: it never deletes, moves or
 writes anything.";
 
 /// `--version` adds the commit and target; `-V` stays `lysosome X.Y.Z`.
@@ -34,11 +35,33 @@ const LONG_VERSION: &str = concat!(
 
 const EXAMPLES: &str = "\
 Examples:
-  lysosome worktrees                       Scan your home folder
-  lysosome worktrees ~/code ~/.worktrees   Scan specific folders (faster)
-  lysosome worktrees --days 14             Call anything idle 14+ days dormant
-  lysosome worktrees --json | jq .summary  Machine-readable output
-  lysosome caches                          Package caches, AI models, Docker, Xcode";
+  lysosome scan                            Everything, across your home folder
+  lysosome scan ~/code ~/.worktrees        Scan specific folders (faster)
+  lysosome worktrees                       Only dormant git worktrees
+  lysosome caches                          Package caches, AI models, Docker, Xcode
+  lysosome scan --days 90                  Call anything idle 90+ days dormant
+  lysosome scan --json | jq .summary       Machine-readable output";
+
+const SCAN_HELP: &str = "\
+Sections:
+  Project build & dependency output  git-ignored node_modules, target, .venv,
+                                     dist, .next, Pods... in every repository
+  Git worktrees                      same as `lysosome worktrees`
+
+Artifact folders are REMOVABLE when their project (last commit, checkout or
+staging, whichever is newest) has been idle --days or more, ACTIVE otherwise.
+Only folders `git check-ignore` confirms are counted; tracked files never are.
+Tiers: dependencies (node_modules, .venv, venv, Pods) are regenerable_expensive
+(re-download); build output is regenerable.
+
+Examples:
+  lysosome scan ~/code                    Scan one folder
+  lysosome scan --days 180 --top 50       Long-idle projects, more rows
+  lysosome scan --all                     Also list active items
+  lysosome scan --json > scan.json        Versioned JSON (schema/lysosome.schema.json)
+  lysosome scan --profile                 Show phase and detector timings on stderr
+
+Nothing is ever changed.";
 
 const WORKTREE_HELP: &str = "\
 Statuses:
@@ -102,6 +125,10 @@ pub struct GlobalArgs {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Find everything reclaimable: idle project artifacts and dormant worktrees
+    #[command(after_help = SCAN_HELP)]
+    Scan(ScanArgs),
+
     /// Find dormant git worktrees and the disk they're holding
     #[command(after_help = WORKTREE_HELP)]
     Worktrees(WorktreesArgs),
@@ -142,6 +169,33 @@ pub struct WorktreesArgs {
     pub json: bool,
 }
 
+#[derive(Debug, Clone, Args)]
+pub struct ScanArgs {
+    /// Folders to scan [default: your home folder]
+    #[arg(value_name = "ROOTS")]
+    pub roots: Vec<PathBuf>,
+
+    /// Idle days before a project or worktree counts as dormant
+    #[arg(long, value_name = "N", default_value_t = lysosome_core::worktree::DEFAULT_DORMANT_DAYS)]
+    pub days: u64,
+
+    /// Maximum folder depth to search for repositories
+    #[arg(long, value_name = "N", default_value_t = lysosome_core::worktree::DEFAULT_MAX_DEPTH)]
+    pub depth: usize,
+
+    /// Also list active items
+    #[arg(long)]
+    pub all: bool,
+
+    /// Rows (or projects) to show per section
+    #[arg(long, value_name = "N", default_value_t = 30)]
+    pub top: usize,
+
+    /// Print the versioned JSON report instead of a table
+    #[arg(long)]
+    pub json: bool,
+}
+
 fn main() -> ExitCode {
     // Release-only man page generator; kept outside clap so it never shows
     // up in --help or shell completions.
@@ -155,6 +209,7 @@ fn main() -> ExitCode {
             let _ = Cli::command().print_help();
             return ExitCode::SUCCESS;
         }
+        Some(Command::Scan(args)) => scan::run(args, &cli.global),
         Some(Command::Worktrees(args)) => worktrees::run(args, &cli.global),
         Some(Command::Caches(args)) => caches::run(args, &cli.global),
         Some(Command::Completions(args)) => completions::completions(Cli::command(), args),

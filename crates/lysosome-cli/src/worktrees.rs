@@ -62,11 +62,29 @@ pub fn run(args: &WorktreesArgs, global: &GlobalArgs) -> Result<String> {
         return Ok(s);
     }
     let p = Painter::new(ui::color_enabled(global.no_color, ui::stdout_is_tty()));
-    Ok(render_table(&scan, args, &p, &shortener))
+    Ok(render_table(&scan, &View::from(args), &p, &shortener))
+}
+
+/// Table options shared by `worktrees` and the worktree section of `scan`.
+#[derive(Debug, Clone, Copy)]
+pub struct View {
+    pub days: u64,
+    pub all: bool,
+    pub top: usize,
+}
+
+impl From<&WorktreesArgs> for View {
+    fn from(a: &WorktreesArgs) -> Self {
+        View {
+            days: a.days,
+            all: a.all,
+            top: a.top,
+        }
+    }
 }
 
 /// Expand `~`, default to the home directory.
-fn resolve_roots(raw: &[PathBuf], home: Option<&Path>) -> Result<Vec<PathBuf>> {
+pub fn resolve_roots(raw: &[PathBuf], home: Option<&Path>) -> Result<Vec<PathBuf>> {
     if raw.is_empty() {
         return home
             .map(|h| vec![h.to_path_buf()])
@@ -122,7 +140,7 @@ fn render_profile(scan: &WorktreeScan, p: &Painter) -> String {
     )
 }
 
-fn status_style(s: Status) -> Style {
+pub fn status_style(s: Status) -> Style {
     match s {
         Status::Removable => Style::new().green().bold(),
         Status::Review => Style::new().yellow().bold(),
@@ -131,15 +149,9 @@ fn status_style(s: Status) -> Style {
     }
 }
 
-fn render_table(
-    scan: &WorktreeScan,
-    args: &WorktreesArgs,
-    p: &Painter,
-    paths: &PathShortener,
-) -> String {
+fn render_table(scan: &WorktreeScan, args: &View, p: &Painter, paths: &PathShortener) -> String {
     let mut out = String::new();
     let o = &mut out;
-    let all = scan.worktrees.len() as u64;
     let roots = scan
         .roots
         .iter()
@@ -147,8 +159,8 @@ fn render_table(
         .collect::<Vec<_>>()
         .join(", ");
 
-    writeln!(o).ok();
-    if all == 0 {
+    if scan.worktrees.is_empty() {
+        writeln!(o).ok();
         writeln!(o, "  No git worktrees found under {}.", p.bold(&roots)).ok();
         writeln!(
             o,
@@ -156,9 +168,24 @@ fn render_table(
             p.dim("Try pointing it at your code folder:  lysosome worktrees ~/code")
         )
         .ok();
-        footer(o, scan, p, &roots);
-        return out;
+    } else {
+        render_body(o, scan, args, p, paths);
     }
+    footer(o, scan, p, &roots);
+    out
+}
+
+/// Headline, table, stale records and suggested commands (no footer). Starts
+/// with a blank line. Used as-is for the worktree section of `lysosome scan`.
+pub fn render_body(
+    o: &mut String,
+    scan: &WorktreeScan,
+    args: &View,
+    p: &Painter,
+    paths: &PathShortener,
+) {
+    let all = scan.worktrees.len() as u64;
+    writeln!(o).ok();
 
     let dormant: Vec<&Worktree> = scan.dormant().collect();
     let removable: Vec<&Worktree> = scan.removable().collect();
@@ -410,13 +437,10 @@ fn render_table(
         )
         .ok();
     }
-
-    footer(o, scan, p, &roots);
-    out
 }
 
 /// Parent dim, last component normal.
-fn path_cell(short: &str, p: &Painter, active: bool) -> String {
+pub fn path_cell(short: &str, p: &Painter, active: bool) -> String {
     if active {
         return p.dim(short);
     }
