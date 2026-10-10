@@ -35,7 +35,7 @@ const LONG_VERSION: &str = concat!(
 
 const EXAMPLES: &str = "\
 Examples:
-  lysosome scan                            Everything, across your home folder
+  lysosome scan                            Idle project artifacts + worktrees in ~
   lysosome scan ~/code ~/.worktrees        Scan specific folders (faster)
   lysosome worktrees                       Only dormant git worktrees
   lysosome caches                          Package caches, AI models, Docker, Xcode

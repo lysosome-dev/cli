@@ -26,6 +26,10 @@
 #     node_modules/       ignored, 1 MiB          ACTIVE (uncommitted edits count as activity)
 #   code/old-scratch      repo committed in 2020; old untracked scratch/ folder with a file
 #     node_modules/       edited now: ignored, 1 MiB, ACTIVE
+#   code/old-go           repo idle since 2020 whose ignored target/ holds a linked worktree
+#     target/wt           (found only via .git/worktrees): target/ is never an artifact finding
+#   code/old-deleted      repo committed in 2020; tracked src/a.txt deleted now
+#     node_modules/       ignored, 1 MiB, ACTIVE (the deletion counts as activity)
 #   code/fresh-py         repo with a commit made now
 #     .venv/              ignored, 2 MiB          ACTIVE regenerable_expensive
 #   code/mono             repo idle since 2020 (remote: remote.git), no artifacts itself
@@ -148,6 +152,29 @@ git -C "$R" add .gitignore main.rs
 old_commit "$R" "initial"
 mib "$R/target/debug" app.bin 3
 
+# --- old-go: a worktree inside an ignored target/ -------------------------------
+G="$CODE/old-go"
+q git init "$G"
+printf 'target/\n' > "$G/.gitignore"
+printf 'package main\n' > "$G/main.go"
+git -C "$G" add .gitignore main.go
+old_commit "$G" "initial"
+mkdir -p "$G/target"
+mib "$G/target" cache.bin 1
+q git -C "$G" worktree add -b wt "$G/target/wt"
+
+# --- old-deleted ---------------------------------------------------------------
+DL="$CODE/old-deleted"
+q git init "$DL"
+printf 'node_modules/\n' > "$DL/.gitignore"
+mkdir -p "$DL/src"
+printf 'a\n' > "$DL/src/a.txt"
+printf 'b\n' > "$DL/src/b.txt"
+git -C "$DL" add .gitignore src
+old_commit "$DL" "initial"
+mib "$DL/node_modules/x" x.bin 1
+rm "$DL/src/a.txt"
+
 # --- fresh-py -----------------------------------------------------------------
 P="$CODE/fresh-py"
 q git init "$P"
@@ -196,6 +223,9 @@ touch -h -t "$OLD_TOUCH" "$W/target"
 backdate_gitdir "$W/.git"
 backdate_gitdir "$R/.git"
 backdate_gitdir "$E/.git"
+backdate_gitdir "$G/.git"
+backdate_gitdir "$G/.git/worktrees/wt"
+backdate_gitdir "$DL/.git"
 backdate_gitdir "$X/.git"
 backdate_gitdir "$I/.git"
 backdate_gitdir "$L2/.git"

@@ -135,7 +135,7 @@ impl Project {
                 (a, status, reason, tier)
             })
             .map(|(a, status, reason, tier)| Finding {
-                id: format!("artifact:{}", a.path.display()),
+                id: format!("{}:{}", a.kind, a.path.display()),
                 category: Category::Artifacts,
                 kind: a.kind.clone(),
                 path: a.path.clone(),
@@ -166,8 +166,6 @@ pub struct ProjectStats {
     pub timings: Vec<PhaseTiming>,
     /// Main repositories found.
     pub repos: u64,
-    /// Main repositories with at least one candidate artifact folder.
-    pub repos_with_candidates: u64,
     /// Artifact-named folders seen by the walk (before attribution/ignore-check).
     pub candidates: u64,
     /// Entries that couldn't be read while measuring main-repo artifacts.
@@ -248,6 +246,11 @@ pub fn scan(opts: &ScanOptions, progress: &dyn Progress) -> Result<ProjectScan> 
         });
     progress.finish(Phase::Walk);
 
+    // Every worktree is a repository boundary, including ones found only via
+    // `.git/worktrees` records (e.g. inside a `target/` the walk never enters),
+    // so attribution and the "contains a repository" rule see them.
+    let mut repo_roots = repo_roots;
+    repo_roots.extend(wt_candidates.iter().map(|c| c.path.clone()));
     let n_candidates = candidates.len() as u64;
     let by_repo = attribute(candidates, &mains, &repo_roots);
 
@@ -327,7 +330,6 @@ pub fn scan(opts: &ScanOptions, progress: &dyn Progress) -> Result<ProjectScan> 
     let stats = ProjectStats {
         timings: all_timings,
         repos: mains.len() as u64,
-        repos_with_candidates: by_repo.len() as u64,
         candidates: n_candidates,
         size_errors,
         git_calls: git.calls(),
@@ -532,7 +534,17 @@ fn worktree_changes_secs(git: &Git, repo: &Path) -> Option<f64> {
         newest = newest.max(if is_dir {
             newest_inside(&abs)
         } else {
-            mtime_nofollow(&abs)
+            match mtime_nofollow(&abs) {
+                // Deleted (or renamed away): the deletion touched its folder.
+                0.0 => abs
+                    .ancestors()
+                    .skip(1)
+                    .take_while(|a| a.starts_with(repo))
+                    .map(mtime_nofollow)
+                    .find(|t| *t > 0.0)
+                    .unwrap_or(0.0),
+                t => t,
+            }
         });
     }
     Some(newest)
@@ -566,7 +578,11 @@ fn newest_inside(dir: &Path) -> f64 {
             }
             let p = e.path();
             newest = newest.max(mtime_nofollow(&p));
-            if e.file_type().is_ok_and(|t| t.is_dir()) {
+            let name = e.file_name();
+            // Don't descend into dependency/build folders or nested repos:
+            // their churn isn't the user's edits, and they can be huge.
+            let heavy = walk::is_skipped(&name) || artifacts::is_artifact_dir(&name);
+            if e.file_type().is_ok_and(|t| t.is_dir()) && !heavy && !p.join(".git").exists() {
                 stack.push(p);
             }
         }

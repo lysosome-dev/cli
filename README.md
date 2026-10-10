@@ -55,7 +55,7 @@ lysosome completions fish > ~/.config/fish/completions/lysosome.fish            
 ## Quick start
 
 ```bash
-lysosome scan                            # everything, across your home folder
+lysosome scan                            # idle project artifacts + worktrees in your home folder
 lysosome scan ~/code ~/.worktrees        # scan specific folders (faster)
 lysosome scan --days 180                 # only call projects idle 180+ days dormant
 lysosome scan --all                      # also list active items
@@ -227,7 +227,7 @@ Tiers: **cache** (`regenerable`) is refilled on demand; **costly** (`regenerable
 
 ```json
 {
-  "id": "artifact:/Users/me/code/augie/node_modules",
+  "id": "node_modules:/Users/me/code/augie/node_modules",
   "category": "artifacts",
   "kind": "node_modules",
   "path": "/Users/me/code/augie/node_modules",

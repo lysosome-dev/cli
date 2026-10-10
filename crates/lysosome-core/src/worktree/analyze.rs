@@ -70,7 +70,7 @@ fn read_branch(head: &Path) -> String {
     }
 }
 
-/// Max mtime (seconds since epoch) of a git dir's `index`, `logs/HEAD` and
+/// Max mtime (seconds since epoch, symlinks not followed) of a git dir's `index`, `logs/HEAD` and
 /// `HEAD`; 0 if none exist. Read before running git (safety rule 2). Shared by
 /// worktrees and main repos so both use the same staleness rule.
 pub(crate) fn git_stamp_secs(git_dir: &Path) -> f64 {
@@ -107,7 +107,7 @@ pub(crate) fn idle(activity_secs: f64, now: SystemTime) -> (Option<i64>, Option<
 }
 
 fn mtime_secs(p: &Path) -> f64 {
-    fs::metadata(p)
+    fs::symlink_metadata(p)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())

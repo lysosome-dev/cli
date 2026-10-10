@@ -43,20 +43,6 @@ impl Category {
         }
     }
 
-    /// The `snake_case` name used in JSON.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Category::Worktrees => "worktrees",
-            Category::Artifacts => "artifacts",
-            Category::AiModels => "ai_models",
-            Category::Xcode => "xcode",
-            Category::PackageCaches => "package_caches",
-            Category::Containers => "containers",
-            Category::Editors => "editors",
-            Category::Android => "android",
-        }
-    }
-
     /// Every category, in display order. `summary.by_category` always lists all of them.
     pub const ALL: [Category; 8] = [
         Category::Worktrees,
@@ -84,15 +70,6 @@ pub enum Tier {
 
 impl Tier {
     pub const ALL: [Tier; 3] = [Tier::Regenerable, Tier::RegenerableExpensive, Tier::Review];
-
-    /// The `snake_case` name used in JSON.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Tier::Regenerable => "regenerable",
-            Tier::RegenerableExpensive => "regenerable_expensive",
-            Tier::Review => "review",
-        }
-    }
 }
 
 /// Classification status. Serialized in `SCREAMING_SNAKE_CASE`.
@@ -410,12 +387,6 @@ mod tests {
         let back: Cleanup =
             serde_json::from_value(serde_json::json!({"command": ["git"]})).unwrap();
         assert_eq!(back, Cleanup::command(vec!["git".into()]));
-        for c in Category::ALL {
-            assert_eq!(serde_json::to_value(c).unwrap(), c.as_str());
-        }
-        for t in Tier::ALL {
-            assert_eq!(serde_json::to_value(t).unwrap(), t.as_str());
-        }
     }
 
     #[test]

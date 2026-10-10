@@ -145,6 +145,12 @@ fn artifact_statuses_tiers_and_exclusions() {
             "mono-active-wt/vendor/lib2/dist",
             ("ACTIVE", "regenerable", "dist", "worktree"),
         ),
+        // A tracked file deleted today: in use.
+        (
+            "old-deleted/node_modules",
+            ("ACTIVE", "regenerable_expensive", "node_modules", "repo"),
+        ),
+        // (old-go/target is absent: it contains a linked worktree.)
         // An editable git checkout inside .venv: never offered for cleanup.
         ("old-web/.venv", ("REVIEW", "review", ".venv", "repo")),
         // Old commit, but a tracked file edited now: in use.
@@ -181,7 +187,7 @@ fn artifact_statuses_tiers_and_exclusions() {
     );
     assert_eq!(
         nm["id"],
-        format!("artifact:{}", nm["path"].as_str().unwrap())
+        format!("node_modules:{}", nm["path"].as_str().unwrap())
     );
     assert_eq!(
         nm["details"]["project"].as_str().unwrap(),
@@ -279,6 +285,13 @@ fn totals_are_honest_and_nothing_is_double_counted() {
     // 5 + 1 + 1 + 1 + 3 MiB of idle project artifacts (+ the small REVIEW .venv).
     let arts = s["by_category"]["artifacts"].as_u64().unwrap();
     assert!((11 * MIB..12 * MIB).contains(&arts), "{arts}");
+
+    // The worktree inside old-go's ignored target/ is a worktree finding, and
+    // target/ itself is not an artifact finding.
+    assert!(all
+        .iter()
+        .any(|f| f["kind"] == "worktree" && fx.rel(f) == "old-go/target/wt"));
+    assert!(!all.iter().any(|f| fx.rel(f) == "old-go/target"));
 
     // Every finding is reported exactly once.
     let mut ids: Vec<&str> = all.iter().map(|f| f["id"].as_str().unwrap()).collect();
@@ -450,7 +463,7 @@ fn table_output_is_sectioned_and_plain_when_piped() {
         "reclaimable now",
         "regenerable_expensive",
         "── Git worktrees",
-        "1 dormant worktree is holding",
+        "2 dormant worktrees are holding",
         "── Project build & dependency output",
         "old-web",
         "packages/api/node_modules",
