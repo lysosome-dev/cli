@@ -382,7 +382,7 @@ pub(crate) fn analyze_found(
             let git_elapsed = t.elapsed();
             let t = Instant::now();
             let gh_calls = if opts.github {
-                apply_github(git, &mut wts)
+                apply_github(git, &mut wts, progress)
             } else {
                 0
             };
@@ -526,7 +526,7 @@ fn build_worktree(
 
 /// Ask GitHub about every squash-merge candidate (when `gh` is installed and
 /// signed in) and apply the verdicts. Returns the number of `gh` calls.
-fn apply_github(git: &Git, wts: &mut [Worktree]) -> u64 {
+fn apply_github(git: &Git, wts: &mut [Worktree], progress: &dyn Progress) -> u64 {
     let idx: Vec<usize> = (0..wts.len())
         .filter(|i| wts[*i].squash_candidate)
         .collect();
@@ -543,7 +543,9 @@ fn apply_github(git: &Git, wts: &mut [Worktree]) -> u64 {
             (w.path.as_path(), w.branch.as_deref().unwrap_or_default())
         })
         .collect();
-    let verdicts = gh.verdicts(git, &jobs);
+    progress.start(Phase::Github, Some(jobs.len() as u64));
+    let verdicts = gh.verdicts(git, &jobs, progress);
+    progress.finish(Phase::Github);
     for (i, v) in idx.into_iter().zip(verdicts) {
         apply_verdict(&mut wts[i], v);
     }

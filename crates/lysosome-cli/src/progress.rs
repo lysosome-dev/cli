@@ -46,6 +46,7 @@ impl Progress for Spinner {
             Phase::Analyze => "Reading git state and sizes".into(),
             Phase::IgnoreCheck => "Checking ignored artifacts".into(),
             Phase::Artifacts => "Measuring project artifacts".into(),
+            Phase::Github => "Asking GitHub about squash-merged branches".into(),
             _ => phase.to_string(),
         };
         self.pb.set_position(0);

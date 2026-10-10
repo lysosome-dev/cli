@@ -316,19 +316,21 @@ impl<'a> Executor<'a> {
                     return Err("internal: unexpected action for a worktree".into());
                 }
                 recheck::protected(path, ctx.home)?;
-                let (status, reason, main) =
-                    recheck::worktree(ctx, path, gitdir, squash_pr.is_some()).map_err(|e| {
-                        // GitHub couldn't be asked: nothing is known to have changed.
-                        if e == recheck::GH_MISSING || e.starts_with("could not re-verify") {
-                            e
-                        } else {
-                            format!("changed since scan: {e}")
-                        }
-                    })?;
-                if status != Status::Removable {
-                    return Err(changed(status, &reason));
+                let now = recheck::worktree(ctx, path, gitdir, squash_pr.is_some())
+                    .map_err(|e| format!("changed since scan: {e}"))?;
+                if now.status != Status::Removable {
+                    // GitHub couldn't be asked: nothing is known to have changed.
+                    return Err(now
+                        .unverified
+                        .unwrap_or_else(|| changed(now.status, &now.reason)));
                 }
-                if !main
+                // A gh lookup can take seconds; honor a Ctrl-C that came in
+                // meanwhile rather than acting on this item.
+                if self.stop.is_some_and(|s| s.load(Ordering::SeqCst)) {
+                    return Err(INTERRUPTED.into());
+                }
+                if !now
+                    .main_repo
                     .as_deref()
                     .is_some_and(|m| discover::same_path(m, main_repo))
                 {
@@ -342,10 +344,10 @@ impl<'a> Executor<'a> {
                     return Err("not inside its worktree".into());
                 }
                 // REVIEW is fine here, so GitHub's answer can't matter.
-                let (status, reason, _) = recheck::worktree(ctx, worktree, gitdir, false)
+                let now = recheck::worktree(ctx, worktree, gitdir, false)
                     .map_err(|e| format!("changed since scan: {e}"))?;
-                if !matches!(status, Status::Removable | Status::Review) {
-                    return Err(changed(status, &reason));
+                if !matches!(now.status, Status::Removable | Status::Review) {
+                    return Err(changed(now.status, &now.reason));
                 }
                 recheck::real_target(path, true, None)
                     .map_err(|e| format!("changed since scan: {e}"))?;

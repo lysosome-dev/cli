@@ -3,15 +3,18 @@
 //! Squash-merging a PR (and deleting its branch) leaves the worktree's
 //! commits "unpushed and not merged" as far as git can tell: the squash commit
 //! has another SHA and the remote branch is gone. Such worktrees classify as
-//! `REVIEW`. When `gh` is installed and signed in, we ask GitHub:
+//! `REVIEW`. When `gh` is installed and signed in, we ask GitHub (once per
+//! repository, then once per branch):
 //!
 //! ```text
-//! gh pr list -R <host/owner/repo> --state merged --head <branch> \
-//!     --json number,headRefOid,mergedAt,url
+//! gh repo view <host/owner/repo> --json defaultBranchRef,owner
+//! gh pr list --repo <host/owner/repo> --state merged --head <branch> --limit 100 \
+//!     --json number,headRefOid,mergedAt,url,baseRefName,headRepositoryOwner
 //! ```
 //!
-//! Only PRs merged into the repository's default branch, from a branch in
-//! the repository itself (not a fork with the same branch name), count.
+//! Only PRs merged into the repository's default branch, from a branch of
+//! the repository itself (its current owner, so renamed or transferred
+//! repositories still match; not a fork with the same branch name), count.
 //!
 //! * A merged PR whose `headRefOid` **is** the worktree's HEAD means every
 //!   local commit was in that PR, which was merged: the (clean, unlocked)
@@ -115,16 +118,18 @@ pub fn squash_reason(number: u64) -> String {
 /// Merged PRs of one (repo, branch), computed once (`None`: gh failed).
 type PrCell = Arc<OnceLock<Option<Vec<Pr>>>>;
 
+/// `(default branch, owner)` of one repo, computed once (`None`: gh failed).
+type RepoCell = Arc<OnceLock<Option<(String, String)>>>;
+
 /// A `gh` runner. Construction only looks `gh` up on `PATH`; nothing runs
-/// until the first lookup (which first checks `gh auth status` for the host).
+/// until the first lookup (`gh repo view`, which also shows whether gh can
+/// reach the repository at all).
 pub struct Gh {
     tools: Tools,
-    /// host -> signed in?
-    auth: Mutex<HashMap<String, Arc<OnceLock<bool>>>>,
     /// (repo, branch) -> merged PRs (None: gh failed).
     prs: Mutex<HashMap<(String, String), PrCell>>,
-    /// repo -> default branch name (None: gh failed).
-    default_branch: Mutex<HashMap<String, Arc<OnceLock<Option<String>>>>>,
+    /// repo -> (default branch, current owner) (None: gh failed).
+    repo_info: Mutex<HashMap<String, RepoCell>>,
     calls: AtomicU64,
 }
 
@@ -157,9 +162,8 @@ impl Gh {
         tools.which("gh")?;
         Some(Gh {
             tools,
-            auth: Mutex::default(),
             prs: Mutex::default(),
-            default_branch: Mutex::default(),
+            repo_info: Mutex::default(),
             calls: AtomicU64::new(0),
         })
     }
@@ -174,31 +178,17 @@ impl Gh {
         self.tools.output("gh", args)
     }
 
-    fn signed_in(&self, host: &str) -> bool {
+    /// `(default branch, current owner login)` of `repo` (`host/owner/name`).
+    /// The first gh call for a repository: it also tells us whether gh can
+    /// reach it at all (signed in, online).
+    fn repo_info(&self, repo: &str) -> Option<(String, String)> {
         let cell = {
-            let mut m = self.auth.lock().unwrap_or_else(|e| e.into_inner());
-            m.entry(host.to_string()).or_default().clone()
-        };
-        *cell.get_or_init(|| self.run(&["auth", "status", "--hostname", host]).is_some())
-    }
-
-    /// The default branch of `repo` (`host/owner/name`).
-    fn default_branch(&self, repo: &str) -> Option<String> {
-        let cell = {
-            let mut m = self
-                .default_branch
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut m = self.repo_info.lock().unwrap_or_else(|e| e.into_inner());
             m.entry(repo.to_string()).or_default().clone()
         };
         cell.get_or_init(|| {
-            let out = self.run(&["repo", "view", repo, "--json", "defaultBranchRef"])?;
-            let v: serde_json::Value = serde_json::from_str(&out).ok()?;
-            v.get("defaultBranchRef")?
-                .get("name")?
-                .as_str()
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
+            let out = self.run(&["repo", "view", repo, "--json", "defaultBranchRef,owner"])?;
+            parse_repo_info(&out)
         })
         .clone()
     }
@@ -244,18 +234,13 @@ impl Gh {
         let Some(repo) = github_repo(git, wt, branch) else {
             return Verdict::Unknown;
         };
-        let host = repo.split('/').next().unwrap_or_default();
-        if !self.signed_in(host) {
-            return Verdict::Unavailable(format!("gh is not signed in to {host}"));
-        }
-        let Some(base) = self.default_branch(&repo) else {
-            return Verdict::Unavailable(format!("gh could not read {repo}'s default branch"));
+        let Some((base, owner)) = self.repo_info(&repo) else {
+            return Verdict::Unavailable(format!("gh could not reach {repo} (signed in? online?)"));
         };
         let Some(prs) = self.merged_prs(&repo, branch) else {
             return Verdict::Unavailable(format!("gh could not list {repo}'s merged PRs"));
         };
-        let owner = repo.split('/').nth(1).unwrap_or_default();
-        let prs = relevant(prs, &base, owner);
+        let prs = relevant(prs, &base, &owner);
         match decide(&head, &prs) {
             Decision::Squash(pr) => Verdict::SquashMerged(MergedPr {
                 number: pr.number,
@@ -291,14 +276,23 @@ impl Gh {
     }
 
     /// Run [`Gh::verdict`] for many worktrees, [`GH_CONCURRENCY`] at a time.
-    pub(crate) fn verdicts(&self, git: &Git, jobs: &[(&Path, &str)]) -> Vec<Verdict> {
+    pub(crate) fn verdicts(
+        &self,
+        git: &Git,
+        jobs: &[(&Path, &str)],
+        progress: &dyn crate::progress::Progress,
+    ) -> Vec<Verdict> {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(GH_CONCURRENCY)
             .thread_name(|i| format!("lysosome-gh-{i}"))
             .build();
         let run = || {
             jobs.par_iter()
-                .map(|(wt, branch)| self.verdict(git, wt, branch))
+                .map(|(wt, branch)| {
+                    let v = self.verdict(git, wt, branch);
+                    progress.advance(1);
+                    v
+                })
                 .collect()
         };
         match pool {
@@ -345,7 +339,15 @@ fn is_sha(s: &str) -> bool {
     (s.len() == 40 || s.len() == 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// `gh pr list --json number,headRefOid,mergedAt,url` output. Entries
+/// `gh repo view --json defaultBranchRef,owner` output.
+fn parse_repo_info(json: &str) -> Option<(String, String)> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let base = v.get("defaultBranchRef")?.get("name")?.as_str()?;
+    let owner = v.get("owner")?.get("login")?.as_str()?;
+    (!base.is_empty() && !owner.is_empty()).then(|| (base.to_string(), owner.to_string()))
+}
+
+/// `gh pr list --json number,headRefOid,mergedAt,url,baseRefName,headRepositoryOwner` output. Entries
 /// missing a field (or not merged) are dropped; malformed JSON is `None`.
 fn parse_prs(json: &str) -> Option<Vec<Pr>> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
@@ -554,6 +556,19 @@ mod tests {
             base: "main".into(),
             head_owner: "acme".into(),
         }
+    }
+
+    #[test]
+    fn parses_repo_info() {
+        assert_eq!(
+            parse_repo_info(r#"{"defaultBranchRef":{"name":"main"},"owner":{"login":"acme"}}"#),
+            Some(("main".into(), "acme".into()))
+        );
+        assert_eq!(
+            parse_repo_info(r#"{"defaultBranchRef":null,"owner":{"login":"a"}}"#),
+            None
+        );
+        assert_eq!(parse_repo_info("nope"), None);
     }
 
     #[test]

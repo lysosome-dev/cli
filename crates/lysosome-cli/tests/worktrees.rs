@@ -544,7 +544,7 @@ impl FakeGh {
         fs::write(
             &gh,
             format!(
-                "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$1\" in\n  auth) exit 0;;\n  repo) echo '{{\"defaultBranchRef\":{{\"name\":\"main\"}}}}';;\n  pr) cat '{}';;\n  *) exit 1;;\nesac\n",
+                "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$1\" in\n  auth) exit 0;;\n  repo) echo '{{\"defaultBranchRef\":{{\"name\":\"main\"}},\"owner\":{{\"login\":\"acme\"}}}}';;\n  pr) cat '{}';;\n  *) exit 1;;\nesac\n",
                 log.display(),
                 response.display()
             ),
@@ -655,7 +655,7 @@ fn squash_merged_worktrees_are_removable_when_github_vouches_for_head() {
     assert!(
         calls
             .iter()
-            .any(|c| c.starts_with("auth status --hostname github.com")),
+            .any(|c| c == "repo view github.com/acme/app --json defaultBranchRef,owner"),
         "{calls:?}"
     );
     let lookups: Vec<&String> = calls.iter().filter(|c| c.starts_with("pr list")).collect();
