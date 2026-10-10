@@ -1,0 +1,234 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/lysosome-dev/cli/schema/lysosome.schema.json",
+  "title": "lysosome report",
+  "description": "Output of `lysosome <command> --json`. Versioned by schema_version; only additive changes happen within a major version, so consumers must ignore unknown properties.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "tool_version",
+    "scanned_roots",
+    "dormant_after_days",
+    "summary",
+    "findings",
+    "stale_metadata"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "tool_version": { "type": "string", "minLength": 1 },
+    "scanned_roots": {
+      "description": "Canonical absolute paths that were scanned.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/path" }
+    },
+    "dormant_after_days": {
+      "description": "Idle days after which an item counts as dormant (--days).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "summary": { "$ref": "#/$defs/summary" },
+    "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+    "stale_metadata": { "type": "array", "items": { "$ref": "#/$defs/stale_metadata" } },
+    "skipped": { "$ref": "#/$defs/skipped" }
+  },
+  "$defs": {
+    "path": { "type": "string", "minLength": 1 },
+    "bytes": { "type": "integer", "minimum": 0 },
+    "tier": {
+      "description": "regenerable: cheap to rebuild, one-click safe. regenerable_expensive: rebuildable but costly to get back. review: a human must look.",
+      "enum": ["regenerable", "regenerable_expensive", "review"]
+    },
+    "status": {
+      "description": "ACTIVE: recently used. REMOVABLE: dormant and provably safe. REVIEW: dormant but may hold unique work. ORPHAN: owning repository is gone.",
+      "enum": ["ACTIVE", "REMOVABLE", "REVIEW", "ORPHAN"]
+    },
+    "category": {
+      "enum": [
+        "worktrees",
+        "artifacts",
+        "ai_models",
+        "xcode",
+        "package_caches",
+        "containers",
+        "editors",
+        "android"
+      ]
+    },
+    "cleanup": {
+      "description": "argv of the command that removes the item. Never present for items that are not safe to remove.",
+      "type": "object",
+      "required": ["command"],
+      "properties": {
+        "command": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["reclaimable_bytes", "by_tier", "by_category"],
+      "properties": {
+        "reclaimable_bytes": {
+          "description": "Total size of REMOVABLE findings: space reclaimable right now with no risk.",
+          "$ref": "#/$defs/bytes"
+        },
+        "by_tier": {
+          "description": "Size of dormant (non-ACTIVE) findings per tier. Every tier is present.",
+          "type": "object",
+          "required": ["regenerable", "regenerable_expensive", "review"],
+          "properties": {
+            "regenerable": { "$ref": "#/$defs/bytes" },
+            "regenerable_expensive": { "$ref": "#/$defs/bytes" },
+            "review": { "$ref": "#/$defs/bytes" }
+          },
+          "additionalProperties": { "$ref": "#/$defs/bytes" }
+        },
+        "by_category": {
+          "description": "Size of dormant (non-ACTIVE) findings per category. Every known category is present.",
+          "type": "object",
+          "required": ["worktrees", "artifacts", "ai_models", "xcode"],
+          "propertyNames": { "pattern": "^[a-z_]+$" },
+          "additionalProperties": { "$ref": "#/$defs/bytes" }
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "required": [
+        "id",
+        "category",
+        "kind",
+        "path",
+        "size_bytes",
+        "tier",
+        "status",
+        "reason",
+        "last_activity",
+        "details",
+        "cleanup"
+      ],
+      "properties": {
+        "id": {
+          "description": "Stable identifier: <kind>:<path>.",
+          "type": "string",
+          "minLength": 1
+        },
+        "category": { "$ref": "#/$defs/category" },
+        "kind": { "type": "string", "minLength": 1 },
+        "path": { "$ref": "#/$defs/path" },
+        "size_bytes": {
+          "description": "Allocated bytes on disk (like du); hard links counted once.",
+          "$ref": "#/$defs/bytes"
+        },
+        "tier": { "$ref": "#/$defs/tier" },
+        "status": { "$ref": "#/$defs/status" },
+        "reason": { "description": "Why it has this status. Empty for ACTIVE.", "type": "string" },
+        "last_activity": {
+          "description": "RFC 3339 UTC timestamp of last use, or null if unknown.",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+            },
+            { "type": "null" }
+          ]
+        },
+        "details": { "type": "object" },
+        "cleanup": {
+          "oneOf": [{ "$ref": "#/$defs/cleanup" }, { "type": "null" }]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "worktree" } } },
+          "then": {
+            "properties": {
+              "category": { "const": "worktrees" },
+              "details": { "$ref": "#/$defs/worktree_details" }
+            }
+          }
+        },
+        {
+          "description": "Only REMOVABLE findings carry a cleanup command.",
+          "if": { "properties": { "status": { "not": { "const": "REMOVABLE" } } } },
+          "then": { "properties": { "cleanup": { "type": "null" } } }
+        }
+      ]
+    },
+    "worktree_details": {
+      "type": "object",
+      "required": [
+        "branch",
+        "idle_days",
+        "changed",
+        "untracked",
+        "unpushed",
+        "merged_into",
+        "locked",
+        "main_repo",
+        "gitdir",
+        "artifact_bytes",
+        "artifacts"
+      ],
+      "properties": {
+        "branch": {
+          "description": "Branch name, \"(detached)\", or null for orphans.",
+          "type": ["string", "null"]
+        },
+        "idle_days": { "type": ["integer", "null"] },
+        "changed": { "description": "Uncommitted changes to tracked files.", "type": "integer", "minimum": 0 },
+        "untracked": { "type": "integer", "minimum": 0 },
+        "unpushed": {
+          "description": "Commits on HEAD that no remote has; null when the repo has no remote.",
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "merged_into": {
+          "description": "Default branch HEAD is merged into, if any.",
+          "type": ["string", "null"]
+        },
+        "locked": { "type": "boolean" },
+        "main_repo": { "type": ["string", "null"] },
+        "gitdir": { "$ref": "#/$defs/path" },
+        "artifact_bytes": {
+          "description": "Bytes in git-ignored build/dependency folders inside the worktree (included in size_bytes).",
+          "$ref": "#/$defs/bytes"
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "size_bytes"],
+            "properties": {
+              "path": { "$ref": "#/$defs/path" },
+              "size_bytes": { "$ref": "#/$defs/bytes" }
+            }
+          }
+        }
+      }
+    },
+    "stale_metadata": {
+      "description": "A .git/worktrees/<name> record whose worktree folder is gone. Harmless; `git worktree prune` removes it.",
+      "type": "object",
+      "required": ["repo", "name", "missing_path", "cleanup"],
+      "properties": {
+        "repo": { "$ref": "#/$defs/path" },
+        "name": { "type": "string", "minLength": 1 },
+        "missing_path": { "$ref": "#/$defs/path" },
+        "cleanup": { "$ref": "#/$defs/cleanup" }
+      }
+    },
+    "skipped": {
+      "description": "What the scan could not look at (never fatal).",
+      "type": "object",
+      "required": ["permission_denied", "other_errors", "missing_roots"],
+      "properties": {
+        "permission_denied": { "type": "integer", "minimum": 0 },
+        "other_errors": { "type": "integer", "minimum": 0 },
+        "missing_roots": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}
