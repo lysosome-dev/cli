@@ -472,9 +472,15 @@ fn generic_section(
     let (ws, wi, wk) = (width(0, "SIZE"), width(1, "IDLE"), width(2, "KIND"));
     const WSTAT: usize = 9;
     const WTIER: usize = 6;
+    // Rows sit under project headers when there are any; indent them all alike.
+    let indent = if kept.iter().any(|b| b.proj.is_some()) {
+        "  "
+    } else {
+        ""
+    };
     writeln!(
         o,
-        "  {}",
+        "  {indent}{}",
         p.dim(format!(
             "{}  {}  {}  {}  {}  PATH",
             pad_right("STATUS", WSTAT),
@@ -488,7 +494,6 @@ fn generic_section(
     let mut i = 0;
     for b in &kept {
         let rows = &b.rows;
-        let indent = if b.proj.is_some() { "  " } else { "" };
         if let Some(proj) = b.proj {
             let first = rows.first().map(|r| r.f);
             let size = b.total;
@@ -516,7 +521,7 @@ fn generic_section(
                 o,
                 "  {indent}{}  {}  {}  {}  {}  {}",
                 p.paint(
-                    pad_right(r.f.status.as_str(), WSTAT - indent.len()),
+                    pad_right(r.f.status.as_str(), WSTAT),
                     worktrees::status_style(r.f.status)
                 ),
                 p.paint(pad_right(tier_badge(r.f.tier), WTIER), tier_style(r.f.tier)),
@@ -533,7 +538,7 @@ fn generic_section(
             if matches!(r.f.status, Status::Review | Status::Orphan) && !r.f.reason.is_empty() {
                 writeln!(
                     o,
-                    "  {}  {}",
+                    "  {indent}{}  {}",
                     " ".repeat(WSTAT),
                     p.paint(format!("└ {}", r.f.reason), Style::new().dimmed().italic())
                 )
