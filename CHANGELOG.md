@@ -7,6 +7,26 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-10
+
+### Fixed
+
+- Scanning could write to disk (#13): with corepack's `pnpm` shim on `PATH`,
+  asking `pnpm store path` downloaded pnpm into `~/.cache/node/corepack`.
+  Corepack shims are now never run during a scan; the pnpm store and Yarn
+  cache are found at their default locations instead (`$PNPM_HOME/store`,
+  `~/Library/pnpm/store`, `$XDG_DATA_HOME/pnpm/store`; `$YARN_CACHE_FOLDER`,
+  `~/Library/Caches/Yarn`, `~/.cache/yarn`, `~/.yarn/berry/cache`). Yarn is no
+  longer asked at all, since `yarn cache dir` creates a missing cache folder.
+- Every tool a scan asks (`pnpm`, `pip`, `uv`, `go`, `brew`, `docker`,
+  `xcrun`) now runs from `/` with only the scan's environment plus switches
+  that turn off downloads, self-updates, auto-installs and bytecode writes
+  (`COREPACK_ENABLE_NETWORK=0`, `GOTOOLCHAIN=local`,
+  `HOMEBREW_NO_AUTO_UPDATE=1`, `PIP_DISABLE_PIP_VERSION_CHECK=1`,
+  `PYTHONDONTWRITEBYTECODE=1`, `MISE_NOT_FOUND_AUTO_INSTALL=false`...), so a
+  project's `packageManager` field or `go.mod` toolchain line can't make a
+  tool fetch itself.
+
 ## [0.2.0] - 2026-10-10
 
 ### Added
@@ -66,6 +86,7 @@ First release.
   and a Homebrew tap (`brew install lysosome-dev/tap/lysosome`). Archives
   include man pages and shell completions.
 
-[Unreleased]: https://github.com/lysosome-dev/cli/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/lysosome-dev/cli/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/lysosome-dev/cli/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/lysosome-dev/cli/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lysosome-dev/cli/releases/tag/v0.1.0
