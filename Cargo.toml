@@ -9,4 +9,4 @@ license = "MIT"
 repository = "https://github.com/lysosome-dev/cli"
 homepage = "https://lysosome.dev"
 authors = ["Scott Havird <scott.havird@gmail.com>"]
-rust-version = "1.80"
+rust-version = "1.85"
