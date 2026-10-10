@@ -1,4 +1,11 @@
-# lysosome
+<h1>
+  <a href="https://lysosome.dev">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/lysosome-dev/brand/main/logo/svg/lockup-horizontal-on-dark.svg">
+      <img alt="lysosome" src="https://raw.githubusercontent.com/lysosome-dev/brand/main/logo/svg/lockup-horizontal-on-light.svg" height="56">
+    </picture>
+  </a>
+</h1>
 
 [![CI](https://github.com/lysosome-dev/cli/actions/workflows/ci.yml/badge.svg)](https://github.com/lysosome-dev/cli/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/lysosome-dev/cli?sort=semver)](https://github.com/lysosome-dev/cli/releases/latest)
@@ -12,7 +19,7 @@ Claude Code, Cursor and parallel agents create git worktrees constantly, and not
 
 > 🚧 Under active development. `lysosome scan` (idle project artifacts, dormant worktrees, plus everything `lysosome caches` finds: package caches, AI models, Docker, Xcode) and `lysosome clean` are here. See [docs/SPEC.md](docs/SPEC.md).
 
-<p align="center"><img src="docs/assets/worktrees.svg" alt="lysosome worktrees: dormant worktrees grouped by how safe they are to remove" width="860"></p>
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/scan-dark.svg"><img src="docs/assets/scan-light.svg" alt="lysosome scan: reclaimable space by safety tier, then dormant worktrees labeled REMOVABLE or REVIEW (example output)" width="860"></picture></p>
 
 ## Why lysosome?
 
