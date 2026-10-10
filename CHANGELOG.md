@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Releases publish `lysosome-core` and `lysosome` to crates.io once the
+  maintainers add a token, so `cargo install lysosome` will work.
+- Issue and pull request templates, a code of conduct, Dependabot, and a
+  `cargo-deny` CI check (licenses, RustSec advisories, duplicate crates).
+
 ## [0.2.1] - 2026-10-10
 
 ### Fixed

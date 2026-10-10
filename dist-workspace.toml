@@ -32,3 +32,8 @@ install-updater = false
 # right before `dist build` (run `scripts/dist-extras.sh` to build them locally)
 include = ["target/dist-extras/man/", "target/dist-extras/completions/"]
 github-build-setup = "../build-setup.yml"
+# Custom publish job (.github/workflows/publish-crates.yml): after the GitHub
+# Release is created, publish lysosome-core then lysosome to crates.io. It
+# skips quietly when the CARGO_REGISTRY_TOKEN secret isn't set and skips any
+# version already on crates.io.
+publish-jobs = ["./publish-crates"]
