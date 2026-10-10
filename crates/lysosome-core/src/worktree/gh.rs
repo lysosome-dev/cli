@@ -368,7 +368,9 @@ pub(crate) fn parse_remote(url: &str) -> Option<String> {
         // scp-like `[user@]host:path` (not a local path, which has no `:`
         // before its first `/`).
         let (left, path) = url.split_once(':')?;
-        if left.contains('/') || left.is_empty() {
+        // `host:/abs/path` is a path on that host, never `owner/repo`
+        // (this also rejects `C:/...`).
+        if left.contains('/') || left.is_empty() || path.starts_with('/') {
             return None;
         }
         (left.rsplit('@').next()?, path)
