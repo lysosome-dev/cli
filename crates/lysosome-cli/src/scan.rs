@@ -171,11 +171,7 @@ fn tier_badge(t: Tier) -> &'static str {
 }
 
 fn tier_style(t: Tier) -> Style {
-    match t {
-        Tier::Regenerable => Style::new().green(),
-        Tier::RegenerableExpensive => Style::new().cyan(),
-        Tier::Review => Style::new().yellow(),
-    }
+    crate::ui::tier_style(t)
 }
 
 /// `details.idle_days` when the detector computed it (same clock as the

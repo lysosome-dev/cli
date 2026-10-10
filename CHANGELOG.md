@@ -21,6 +21,12 @@ All notable changes to this project are documented here. The format follows
 - `lysosome caches` counted a simulator disk image twice when two runtime
   entries shared it; it is now listed once (`details.shared_with_runtime_ids`).
 
+- Tier colors match the brand (#24): regenerable is GFP mint, expensive is
+  amber, review is DAPI blue-violet (exact on truecolor terminals, nearest
+  xterm-256 color on 256-color ones, else green / yellow / blue), in
+  `scan`, `caches`, `clean` and the `REMOVABLE` / `REVIEW` statuses.
+  `NO_COLOR` and piped output stay plain; `--json` is unchanged.
+
 ### Added
 
 - First-run polish (#28): a bare `lysosome` starts with a three-line

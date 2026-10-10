@@ -467,9 +467,9 @@ fn confirm(p: &Painter) -> Result<bool> {
 
 pub(crate) fn tier_badge(t: Tier, p: &Painter) -> String {
     let (label, style) = match t {
-        Tier::Regenerable => ("cheap", Style::new().green()),
-        Tier::RegenerableExpensive => ("costly", Style::new().cyan()),
-        Tier::Review => ("review", Style::new().yellow()),
+        Tier::Regenerable => ("cheap", ui::tier_style(t)),
+        Tier::RegenerableExpensive => ("costly", ui::tier_style(t)),
+        Tier::Review => ("review", ui::tier_style(t)),
     };
     p.paint(pad_right(label, 6), style)
 }

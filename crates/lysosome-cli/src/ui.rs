@@ -26,6 +26,63 @@ pub fn stderr_is_tty() -> bool {
     std::io::stderr().is_terminal()
 }
 
+/// How many colors the terminal can show (`NO_COLOR` / non-TTY are handled
+/// by [`color_enabled`]; this only picks the palette).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Depth {
+    Basic,
+    Xterm256,
+    TrueColor,
+}
+
+impl Depth {
+    pub fn from_env(colorterm: Option<&str>, term: Option<&str>) -> Depth {
+        if colorterm
+            .is_some_and(|c| c.eq_ignore_ascii_case("truecolor") || c.eq_ignore_ascii_case("24bit"))
+        {
+            Depth::TrueColor
+        } else if term.is_some_and(|t| t.contains("256color")) {
+            Depth::Xterm256
+        } else {
+            Depth::Basic
+        }
+    }
+
+    fn current() -> Depth {
+        static D: std::sync::OnceLock<Depth> = std::sync::OnceLock::new();
+        *D.get_or_init(|| {
+            Depth::from_env(
+                std::env::var("COLORTERM").ok().as_deref(),
+                std::env::var("TERM").ok().as_deref(),
+            )
+        })
+    }
+}
+
+/// The brand color of a safety tier (lysosome-dev/brand, `color.tier.*`):
+/// regenerable = GFP mint `#6ef0b0`, expensive = amber `#ffc15e`, review =
+/// DAPI blue-violet `#92a9ff`. Exact on truecolor terminals, the nearest
+/// xterm-256 color on 256-color ones (121, 215, 111), else green / yellow /
+/// blue.
+pub fn tier_style(t: lysosome_core::model::Tier) -> Style {
+    tier_style_at(t, Depth::current())
+}
+
+pub fn tier_style_at(t: lysosome_core::model::Tier, d: Depth) -> Style {
+    use lysosome_core::model::Tier;
+    use owo_colors::{AnsiColors, XtermColors};
+    let (rgb, xterm, basic) = match t {
+        Tier::Regenerable => ((0x6e, 0xf0, 0xb0), 121u8, AnsiColors::Green),
+        Tier::RegenerableExpensive => ((0xff, 0xc1, 0x5e), 215, AnsiColors::Yellow),
+        Tier::Review => ((0x92, 0xa9, 0xff), 111, AnsiColors::Blue),
+    };
+    match d {
+        Depth::TrueColor => Style::new().truecolor(rgb.0, rgb.1, rgb.2),
+        Depth::Xterm256 => Style::new().color(XtermColors::from(xterm)),
+        Depth::Basic => Style::new().color(basic),
+    }
+}
+
 /// Applies styles only when color is on.
 #[derive(Debug, Clone, Copy)]
 pub struct Painter {
@@ -201,6 +258,36 @@ mod tests {
         assert_eq!(shell_quote("/a b/c"), "\"/a b/c\"");
         assert_eq!(shell_quote("/a$b\"c"), "\"/a\\$b\\\"c\"");
         assert_eq!(shell_quote("/wow!/it's"), "'/wow!/it'\\''s'");
+    }
+
+    #[test]
+    fn tier_colors_follow_the_brand_palette() {
+        use lysosome_core::model::Tier;
+        assert_eq!(
+            Depth::from_env(Some("truecolor"), Some("xterm")),
+            Depth::TrueColor
+        );
+        assert_eq!(
+            Depth::from_env(None, Some("xterm-256color")),
+            Depth::Xterm256
+        );
+        assert_eq!(Depth::from_env(None, Some("xterm")), Depth::Basic);
+        let p = Painter::new(true);
+        let s = |t, d| p.paint("x", tier_style_at(t, d));
+        assert_eq!(
+            s(Tier::Regenerable, Depth::TrueColor),
+            "\x1b[38;2;110;240;176mx\x1b[0m"
+        );
+        assert_eq!(
+            s(Tier::RegenerableExpensive, Depth::Xterm256),
+            "\x1b[38;5;215mx\x1b[0m"
+        );
+        assert_eq!(s(Tier::Review, Depth::Basic), "\x1b[34mx\x1b[0m");
+        // NO_COLOR / non-TTY: plain.
+        assert_eq!(
+            Painter::new(false).paint("x", tier_style(Tier::Review)),
+            "x"
+        );
     }
 
     #[test]

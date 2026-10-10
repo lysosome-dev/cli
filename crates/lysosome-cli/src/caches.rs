@@ -126,9 +126,9 @@ fn render_profile(out: &RunOutput, total: Duration, p: &Painter) -> String {
 
 fn tier_badge(t: Tier, p: &Painter) -> String {
     let (label, style) = match t {
-        Tier::Regenerable => ("cache", Style::new().green()),
-        Tier::RegenerableExpensive => ("costly", Style::new().yellow()),
-        Tier::Review => ("review", Style::new().magenta()),
+        Tier::Regenerable => ("cache", crate::ui::tier_style(t)),
+        Tier::RegenerableExpensive => ("costly", crate::ui::tier_style(t)),
+        Tier::Review => ("review", crate::ui::tier_style(t)),
     };
     p.paint(pad_right(label, 6), style)
 }
