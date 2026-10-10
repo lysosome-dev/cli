@@ -113,13 +113,15 @@ fn walk_checked(dir: &Path, git: GitPolicy) -> Result<u64, String> {
     // The target itself must not be a mount point (its whole filesystem
     // would go).
     if let Some(parent) = dir.parent() {
-        let pdev = fs::symlink_metadata(parent)
+        // The parent's real folder (it may be reached through a symlink).
+        let pdev = fs::metadata(parent)
             .map_err(|e| format!("cannot inspect its folder: {e}"))?
             .dev();
         if pdev != dev {
             return Err("it is a separate mounted filesystem".into());
         }
     }
+    mounts_inside(dir)?;
     let mut bytes = root.blocks() * 512;
     let mut seen = std::collections::HashSet::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -160,6 +162,51 @@ fn walk_checked(dir: &Path, git: GitPolicy) -> Result<u64, String> {
         }
     }
     Ok(bytes)
+}
+
+/// Linux bind mounts can share the device number of the folder they sit in,
+/// so also ask the kernel for every mount point.
+#[cfg(target_os = "linux")]
+fn mounts_inside(dir: &Path) -> Result<(), String> {
+    let Ok(info) = fs::read_to_string("/proc/self/mountinfo") else {
+        return Err("cannot read /proc/self/mountinfo to rule out mounts inside".into());
+    };
+    for line in info.lines() {
+        let Some(mp) = line.split(' ').nth(4) else {
+            continue;
+        };
+        let mp = unescape_mountinfo(mp);
+        if Path::new(&mp).starts_with(dir) {
+            return Err(format!("a filesystem is mounted inside ({mp})"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn unescape_mountinfo(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\\' && i + 3 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 4], 8) {
+                out.push(v);
+                i += 4;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// macOS has no bind mounts; every mount has its own device number, which
+/// the walk already compares.
+#[cfg(not(target_os = "linux"))]
+fn mounts_inside(_dir: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 /// [`real_target`]'s reason when the path is simply gone (callers compare

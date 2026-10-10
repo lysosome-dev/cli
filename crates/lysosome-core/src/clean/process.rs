@@ -7,6 +7,7 @@ use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -133,6 +134,7 @@ pub(crate) fn run(spec: &Proc<'_>) -> std::io::Result<ProcOutput> {
     );
 
     let pid = child.id();
+    let _active = ActiveGuard::set(pid);
     let deadline = Instant::now() + spec.timeout;
     let mut pause = Duration::from_millis(5);
     let (status, timed_out) = loop {
@@ -167,6 +169,38 @@ pub(crate) fn run(spec: &Proc<'_>) -> std::io::Result<ProcOutput> {
         stderr,
         timed_out,
     })
+}
+
+/// Process group of the cleanup command running right now (0 = none), so a
+/// signal handler can stop it: see [`kill_active_command`].
+static ACTIVE_GROUP: AtomicI32 = AtomicI32::new(0);
+
+struct ActiveGuard;
+
+impl ActiveGuard {
+    fn set(pid: u32) -> Self {
+        ACTIVE_GROUP.store(i32::try_from(pid).unwrap_or(0), Ordering::SeqCst);
+        ActiveGuard
+    }
+}
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        ACTIVE_GROUP.store(0, Ordering::SeqCst);
+    }
+}
+
+/// Kill the running cleanup command's whole process group, if any.
+/// Async-signal-safe (an atomic load and `kill`), for a Ctrl-C handler that
+/// is about to exit.
+pub fn kill_active_command() {
+    let g = ACTIVE_GROUP.load(Ordering::SeqCst);
+    if g > 0 {
+        // SAFETY: plain syscall on our own child's process group.
+        unsafe {
+            libc::kill(-g, libc::SIGKILL);
+        }
+    }
 }
 
 fn kill_group(pid: u32) {

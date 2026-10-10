@@ -298,7 +298,9 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
             print_now(&result_line(item, r, &p, &shortener));
         }
     })?;
-    let interrupted = STOP.load(Ordering::SeqCst);
+    let interrupted = results
+        .iter()
+        .any(|r| r.message.starts_with(clean::INTERRUPTED));
     if interrupted {
         eprintln!(
             "{} interrupted: stopped after the current item",
@@ -332,7 +334,10 @@ static STOP: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_sigint(_: libc::c_int) {
     if STOP.swap(true, Ordering::SeqCst) {
-        // SAFETY: async-signal-safe; second Ctrl-C means "now".
+        // Second Ctrl-C means "now": stop the running cleanup command too
+        // (it has its own process group), then exit. Both async-signal-safe.
+        clean::kill_active_command();
+        // SAFETY: async-signal-safe.
         unsafe { libc::_exit(130) };
     }
 }

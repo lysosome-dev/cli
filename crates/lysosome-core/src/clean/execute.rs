@@ -18,6 +18,9 @@ use crate::git::{Git, REPO_ENV_VARS};
 use crate::model::Status;
 use crate::worktree::discover;
 
+/// Message (prefix) of items not acted on because of an interrupt.
+pub const INTERRUPTED: &str = "not attempted: interrupted";
+
 /// Default limit for one cleanup command (`docker builder prune` can be slow).
 pub const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
@@ -91,12 +94,19 @@ impl Trasher for DirTrash {
 /// `remove_dir_all`, which walks with `openat`/`O_NOFOLLOW`, so a folder
 /// swapped for a symlink mid-delete is not followed.
 pub fn delete_permanently(path: &Path) -> Result<(), String> {
+    delete_checked(path, false)
+}
+
+/// `inspected`: the caller just ran [`recheck::inspect_tree`] on `path`.
+fn delete_checked(path: &Path, inspected: bool) -> Result<(), String> {
     let m = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     if m.file_type().is_symlink() {
         return Err("refusing to delete a symlink target".into());
     }
     if m.is_dir() {
-        recheck::inspect_tree(path, false)?;
+        if !inspected {
+            recheck::inspect_tree(path, false)?;
+        }
         fs::remove_dir_all(path).map_err(|e| format!("could not delete: {e}"))
     } else {
         fs::remove_file(path).map_err(|e| format!("could not delete: {e}"))
@@ -227,7 +237,13 @@ impl<'a> Executor<'a> {
                     None,
                     format!("not attempted: the action log could not be written ({e})"),
                 ),
-                None if interrupted => ItemResult::skip("not attempted: interrupted"),
+                None if interrupted => {
+                    let r = ItemResult::skip(INTERRUPTED);
+                    if let Some(log) = self.log {
+                        let _ = log.record(item, &r);
+                    }
+                    r
+                }
                 None => {
                     let ctx = Ctx {
                         git: git.as_ref(),
@@ -237,6 +253,13 @@ impl<'a> Executor<'a> {
                         path_env: self.path_env.as_ref(),
                     };
                     let mut r = self.one(&ctx, item, plan.permanent);
+                    // Ctrl-C can kill a re-check's git process; a skip then
+                    // says nothing about the item itself.
+                    if r.outcome == Outcome::Skipped
+                        && self.stop.is_some_and(|s| s.load(Ordering::SeqCst))
+                    {
+                        r.message = format!("{INTERRUPTED} (during the re-check: {})", r.message);
+                    }
                     if let Some(log) = self.log {
                         if let Err(e) = log.record(item, &r) {
                             // Whatever happened to this item is unrecorded:
@@ -400,7 +423,10 @@ impl<'a> Executor<'a> {
         for (p, size) in targets {
             let r = match action {
                 ActionKind::Trash => self.trasher.trash(p),
-                ActionKind::Delete => delete_permanently(p).map(|()| "deleted permanently".into()),
+                // Every folder reaching here was inspect_tree'd moments ago.
+                ActionKind::Delete => {
+                    delete_checked(p, true).map(|()| "deleted permanently".into())
+                }
                 _ => Err("internal: not a trash or delete action".into()),
             };
             match r {

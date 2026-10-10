@@ -32,9 +32,10 @@ use serde::{Deserialize, Serialize};
 
 pub use execute::{
     delete_permanently, DirTrash, Executor, ItemResult, Outcome, SystemTrash, Trasher,
-    DEFAULT_COMMAND_TIMEOUT,
+    DEFAULT_COMMAND_TIMEOUT, INTERRUPTED,
 };
 pub use log::{default_log_path, ActionLog};
+pub use process::kill_active_command;
 
 use crate::artifacts;
 use crate::model::{lossy_path, lossy_paths, Category, CleanupAction, Finding, Status, Tier};
