@@ -29,6 +29,34 @@ pub enum Category {
 }
 
 impl Category {
+    /// Human-readable section title.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Category::Worktrees => "Git worktrees",
+            Category::Artifacts => "Project build & dependency output",
+            Category::AiModels => "AI models",
+            Category::Xcode => "Xcode",
+            Category::PackageCaches => "Package caches",
+            Category::Containers => "Containers",
+            Category::Editors => "Editor caches",
+            Category::Android => "Android",
+        }
+    }
+
+    /// The `snake_case` name used in JSON.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Category::Worktrees => "worktrees",
+            Category::Artifacts => "artifacts",
+            Category::AiModels => "ai_models",
+            Category::Xcode => "xcode",
+            Category::PackageCaches => "package_caches",
+            Category::Containers => "containers",
+            Category::Editors => "editors",
+            Category::Android => "android",
+        }
+    }
+
     /// Every category, in display order. `summary.by_category` always lists all of them.
     pub const ALL: [Category; 8] = [
         Category::Worktrees,
@@ -56,6 +84,15 @@ pub enum Tier {
 
 impl Tier {
     pub const ALL: [Tier; 3] = [Tier::Regenerable, Tier::RegenerableExpensive, Tier::Review];
+
+    /// The `snake_case` name used in JSON.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Tier::Regenerable => "regenerable",
+            Tier::RegenerableExpensive => "regenerable_expensive",
+            Tier::Review => "review",
+        }
+    }
 }
 
 /// Classification status. Serialized in `SCREAMING_SNAKE_CASE`.
@@ -276,7 +313,7 @@ pub(crate) mod lossy_path {
     }
 }
 
-mod lossy_paths {
+pub(crate) mod lossy_paths {
     use serde::ser::SerializeSeq;
     use serde::{Deserialize, Deserializer, Serializer};
     use std::path::PathBuf;
@@ -356,6 +393,29 @@ mod tests {
         f.path = PathBuf::from(std::ffi::OsStr::from_bytes(b"/home/u/\xff/wt"));
         let v = serde_json::to_value(&f).unwrap();
         assert_eq!(v["path"], "/home/u/\u{fffd}/wt");
+    }
+
+    #[test]
+    fn cleanup_serializes_by_action() {
+        let c = serde_json::to_value(Cleanup::command(vec!["git".into(), "x".into()])).unwrap();
+        assert_eq!(
+            c,
+            serde_json::json!({"action": "command", "command": ["git", "x"]})
+        );
+        let t = serde_json::to_value(Cleanup::trash(vec!["/a/node_modules".into()])).unwrap();
+        assert_eq!(
+            t,
+            serde_json::json!({"action": "trash", "paths": ["/a/node_modules"]})
+        );
+        let back: Cleanup =
+            serde_json::from_value(serde_json::json!({"command": ["git"]})).unwrap();
+        assert_eq!(back, Cleanup::command(vec!["git".into()]));
+        for c in Category::ALL {
+            assert_eq!(serde_json::to_value(c).unwrap(), c.as_str());
+        }
+        for t in Tier::ALL {
+            assert_eq!(serde_json::to_value(t).unwrap(), t.as_str());
+        }
     }
 
     #[test]

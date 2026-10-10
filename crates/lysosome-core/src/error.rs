@@ -6,6 +6,7 @@
 //! make the whole operation meaningless.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Convenience alias used throughout the crate.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -28,6 +29,10 @@ pub enum Error {
     /// A rayon thread pool could not be created.
     #[error("could not start worker threads: {0}")]
     ThreadPool(String),
+
+    /// An error from a computation several detectors share (e.g. the project walk).
+    #[error("{0}")]
+    Shared(Arc<Error>),
 
     /// Generic I/O failure with the path that caused it.
     #[error("{path}: {source}")]

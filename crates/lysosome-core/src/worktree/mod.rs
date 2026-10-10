@@ -21,7 +21,7 @@
 
 mod analyze;
 pub mod classify;
-mod discover;
+pub(crate) mod discover;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -35,6 +35,7 @@ use crate::git::{Git, DEFAULT_TIMEOUT};
 use crate::model::{Category, Cleanup, Finding, Report, Skipped, StaleMetadata, Status, Tier};
 use crate::progress::{Phase, Progress};
 use crate::size::{Sizer, Split};
+use crate::walk::WalkStats;
 
 pub use classify::{classify, Facts, ORPHAN_REASON};
 
@@ -243,7 +244,7 @@ impl WorktreeScan {
 
 /// Canonicalize roots; split into usable folders and missing ones. Roots nested
 /// inside another root are walked once (the outer walk covers them).
-fn resolve_roots(roots: &[PathBuf]) -> (Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>) {
+pub(crate) fn resolve_roots(roots: &[PathBuf]) -> (Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>) {
     let mut ok = Vec::new();
     let mut missing = Vec::new();
     for r in roots {
@@ -264,7 +265,7 @@ fn resolve_roots(roots: &[PathBuf]) -> (Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>
     (ok, walk_roots, missing)
 }
 
-fn timed<T>(timings: &mut Vec<PhaseTiming>, phase: Phase, f: impl FnOnce() -> T) -> T {
+pub(crate) fn timed<T>(timings: &mut Vec<PhaseTiming>, phase: Phase, f: impl FnOnce() -> T) -> T {
     let t = Instant::now();
     let out = f();
     timings.push(PhaseTiming {
@@ -290,7 +291,47 @@ pub fn scan(opts: &ScanOptions, progress: &dyn Progress) -> Result<WorktreeScan>
         discover::discover(&walk_roots, opts.max_depth, progress)
     });
     progress.finish(Phase::Walk);
-    let candidates = found.candidates;
+    Ok(analyze_found(
+        &git,
+        opts,
+        Found {
+            roots,
+            missing_roots,
+            candidates: found.candidates,
+            stale: found.stale,
+            walk: found.walk,
+        },
+        timings,
+        started,
+        progress,
+    ))
+}
+
+/// Discovery output the analysis phases need.
+pub(crate) struct Found {
+    pub roots: Vec<PathBuf>,
+    pub missing_roots: Vec<PathBuf>,
+    pub candidates: Vec<discover::Candidate>,
+    pub stale: Vec<StaleMetadata>,
+    pub walk: WalkStats,
+}
+
+/// Phases 2–4 (git ∥ size, then ignore-check) over already-discovered worktrees.
+pub(crate) fn analyze_found(
+    git: &Git,
+    opts: &ScanOptions,
+    found: Found,
+    mut timings: Vec<PhaseTiming>,
+    started: Instant,
+    progress: &dyn Progress,
+) -> WorktreeScan {
+    let Found {
+        roots,
+        missing_roots,
+        candidates,
+        stale,
+        walk,
+    } = found;
 
     // 2+3. git analysis and size measurement are independent, so they run
     // concurrently: git on its bounded pool, sizing on the global pool.
@@ -306,7 +347,7 @@ pub fn scan(opts: &ScanOptions, progress: &dyn Progress) -> Result<WorktreeScan>
                     .par_iter()
                     .zip(pre.par_iter())
                     .map(|(c, pre)| {
-                        let wt = build_worktree(&git, &cache, c, pre, opts);
+                        let wt = build_worktree(git, &cache, c, pre, opts);
                         progress.advance(1);
                         wt
                     })
@@ -360,7 +401,7 @@ pub fn scan(opts: &ScanOptions, progress: &dyn Progress) -> Result<WorktreeScan>
                 .for_each(|(w, parts)| {
                     if w.status != Status::Orphan {
                         let paths: Vec<PathBuf> = parts.iter().map(|(p, _)| p.clone()).collect();
-                        let ignored = artifacts::ignored_subset(&git, &w.path, &paths);
+                        let ignored = artifacts::ignored_subset(git, &w.path, &paths);
                         w.artifacts = parts
                             .iter()
                             .filter(|(p, _)| ignored.contains(p))
@@ -377,22 +418,22 @@ pub fn scan(opts: &ScanOptions, progress: &dyn Progress) -> Result<WorktreeScan>
     });
     progress.finish(Phase::IgnoreCheck);
 
-    Ok(WorktreeScan {
+    WorktreeScan {
         roots,
         missing_roots,
         dormant_after_days: opts.dormant_after_days,
         worktrees,
-        stale: found.stale,
+        stale,
         stats: ScanStats {
             timings,
-            dirs_visited: found.walk.dirs_visited,
-            permission_denied: found.walk.permission_denied,
-            other_errors: found.walk.other_errors,
+            dirs_visited: walk.dirs_visited,
+            permission_denied: walk.permission_denied,
+            other_errors: walk.other_errors,
             git_calls: git.calls(),
             size_errors,
             total: started.elapsed(),
         },
-    })
+    }
 }
 
 fn build_worktree(

@@ -10,6 +10,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use crate::git::Git;
+use crate::model::Tier;
 
 /// Regenerable build/dependency folder names (identical to `ARTIFACT_DIRS` in
 /// `reference/wtscan.py`).
@@ -37,6 +38,21 @@ pub const ARTIFACT_DIRS: &[&str] = &[
 /// How deep below a worktree root to look for artifact folders.
 /// Folders are listed up to this depth, so artifacts can sit one level deeper.
 pub const ARTIFACT_SEARCH_DEPTH: usize = 6;
+
+/// Installed third-party dependencies: rebuilding them means re-downloading
+/// (network, registry availability, lockfile resolution), so they are
+/// [`Tier::RegenerableExpensive`]. Everything else in [`ARTIFACT_DIRS`] is local
+/// build output or a tool cache and is [`Tier::Regenerable`].
+pub const DEPENDENCY_DIRS: &[&str] = &["node_modules", ".venv", "venv", "Pods"];
+
+/// Safety tier of an artifact folder by name (see [`DEPENDENCY_DIRS`]).
+pub fn tier_for(name: &OsStr) -> Tier {
+    if DEPENDENCY_DIRS.iter().any(|d| OsStr::new(d) == name) {
+        Tier::RegenerableExpensive
+    } else {
+        Tier::Regenerable
+    }
+}
 
 /// Is `name` one of [`ARTIFACT_DIRS`]?
 pub fn is_artifact_dir(name: &OsStr) -> bool {
@@ -70,4 +86,24 @@ pub fn ignored_subset(git: &Git, repo_dir: &Path, candidates: &[PathBuf]) -> Vec
         .filter(|r| ignored.contains(r.as_os_str().as_bytes()))
         .map(|r| repo_dir.join(r))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dependency_dirs_are_expensive_and_build_output_is_cheap() {
+        assert_eq!(
+            tier_for(OsStr::new("node_modules")),
+            Tier::RegenerableExpensive
+        );
+        assert_eq!(tier_for(OsStr::new(".venv")), Tier::RegenerableExpensive);
+        assert_eq!(tier_for(OsStr::new("Pods")), Tier::RegenerableExpensive);
+        assert_eq!(tier_for(OsStr::new("target")), Tier::Regenerable);
+        assert_eq!(tier_for(OsStr::new("dist")), Tier::Regenerable);
+        for d in DEPENDENCY_DIRS {
+            assert!(is_artifact_dir(OsStr::new(d)));
+        }
+    }
 }
