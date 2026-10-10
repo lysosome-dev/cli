@@ -48,6 +48,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --all-targets
+      # --all-targets skips doctests; this compiles the lysosome-core README
+      # example that docs.rs shows on the crate's front page.
+      - run: cargo test --workspace --doc
 
   deny:
     name: cargo-deny

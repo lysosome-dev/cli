@@ -7,7 +7,9 @@
 # crates.io is skipped.
 #
 # Manual run (e.g. after adding the token for a release that already
-# shipped): Actions -> "Publish crates" -> Run workflow, on the release tag.
+# shipped): Actions -> "Publish crates" -> Run workflow, and pick the release
+# tag (vX.Y.Z) as the ref. Any other ref, or a tag that doesn't match the
+# version in Cargo.toml, is refused, since a crates.io upload can't be undone.
 name: Publish crates
 
 on:
@@ -20,8 +22,9 @@ on:
   workflow_dispatch:
 
 # No `permissions:` block: when called from release.yml this job gets the
-# caller's permissions (a nested workflow may not ask for more), and it only
-# reads this public repository and talks to crates.io with its own token.
+# caller's permissions (contents: read, set by github-custom-job-permissions
+# in dist-workspace.toml; a nested workflow may not ask for more). It only
+# reads the repository and talks to crates.io with its own token.
 
 jobs:
   publish-crates:
@@ -52,19 +55,38 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Only publish a release tag whose name matches the crate versions.
+          cli_version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "lysosome") | .version')
+          if [ "$GITHUB_REF" != "refs/tags/v$cli_version" ]; then
+            echo "::error::Refusing to publish: ref is $GITHUB_REF, expected refs/tags/v$cli_version (the version in Cargo.toml)."
+            exit 1
+          fi
           # Dependency order: the CLI depends on lysosome-core by version.
           for crate in lysosome-core lysosome; do
             version=$(cargo metadata --no-deps --format-version 1 \
               | jq -r --arg c "$crate" '.packages[] | select(.name == $c) | .version')
+            if [ -z "$version" ] || [ "$version" = "null" ]; then
+              echo "::error::No version found for $crate in Cargo metadata."
+              exit 1
+            fi
             status=$(curl -sS -o /dev/null -w '%{http_code}' \
               -A "lysosome-release (https://github.com/lysosome-dev/cli)" \
               "https://crates.io/api/v1/crates/$crate/$version")
-            if [ "$status" = "200" ]; then
-              echo "$crate $version is already on crates.io; skipping."
-              continue
-            fi
-            echo "Publishing $crate $version (crates.io answered $status)"
-            # cargo waits until the new version is in the index, so the
-            # next crate can resolve it.
-            cargo publish --locked -p "$crate"
+            case "$status" in
+              200)
+                echo "$crate $version is already on crates.io; skipping."
+                continue
+                ;;
+              404)
+                echo "Publishing $crate $version"
+                # cargo waits until the new version is in the index, so the
+                # next crate can resolve it.
+                cargo publish --locked -p "$crate"
+                ;;
+              *)
+                echo "::error::crates.io answered HTTP $status for $crate $version; not sure whether it is published. Re-run this job later."
+                exit 1
+                ;;
+            esac
           done

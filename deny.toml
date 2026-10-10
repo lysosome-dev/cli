@@ -18,8 +18,10 @@ all-features = true
 # RustSec advisories (this replaces a separate `cargo audit` step).
 [advisories]
 db-urls = ["https://github.com/rustsec/advisory-db"]
-# Unmaintained crates anywhere in the tree are reported.
-unmaintained = "all"
+# An "unmaintained" advisory fails the check only for our direct
+# dependencies; deep transitive ones would break every PR without anything
+# we could change. (Security advisories fail for the whole tree.)
+unmaintained = "workspace"
 yanked = "deny"
 ignore = []
 

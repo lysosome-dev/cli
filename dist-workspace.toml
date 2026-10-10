@@ -37,3 +37,6 @@ github-build-setup = "../build-setup.yml"
 # skips quietly when the CARGO_REGISTRY_TOKEN secret isn't set and skips any
 # version already on crates.io.
 publish-jobs = ["./publish-crates"]
+# Job-level permissions replace the workflow's, so give the publish job
+# read access for actions/checkout (needed if the repo is ever private).
+github-custom-job-permissions = { "publish-crates" = { contents = "read" } }
