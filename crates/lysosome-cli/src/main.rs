@@ -18,10 +18,10 @@ const ABOUT: &str = "Find the disk your dev tools and coding agents left behind.
 const LONG_ABOUT: &str = "\
 Find the disk your dev tools and coding agents left behind.
 
-lysosome finds dormant git worktrees and the git-ignored dependencies and
-build output of idle projects (and soon package caches, AI models, Docker and
-Xcode data) and labels every item by how safe it is to delete. Scanning is strictly read-only: it never deletes, moves or
-writes anything.";
+lysosome finds dormant git worktrees, the git-ignored dependencies and build
+output of idle projects, package caches, AI models, Docker and Xcode data, and
+labels every item by how safe it is to delete. Scanning is strictly
+read-only: it never deletes, moves or writes anything.";
 
 /// `--version` adds the commit and target; `-V` stays `lysosome X.Y.Z`.
 const LONG_VERSION: &str = concat!(
