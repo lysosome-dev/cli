@@ -90,6 +90,11 @@ impl SystemEnv {
         }
     }
 
+    /// Every variable (the base environment of tool children).
+    pub(crate) fn vars(&self) -> &HashMap<String, OsString> {
+        &self.vars
+    }
+
     /// A non-empty variable.
     pub fn var(&self, key: &str) -> Option<&OsString> {
         self.vars.get(key).filter(|v| !v.is_empty())

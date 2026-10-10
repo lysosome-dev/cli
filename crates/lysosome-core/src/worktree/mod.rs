@@ -18,10 +18,15 @@
 //! 3. **size** — concurrently with git: one parallel pass per worktree
 //!    measuring total size and candidate artifact folders.
 //! 4. **ignore-check** — keep only artifact folders git ignores.
+//!
+//! With [`ScanOptions::github`], phase 2 ends by asking GitHub (through
+//! `gh`) about worktrees that are `REVIEW` only because of commit safety;
+//! see [`gh`].
 
 pub(crate) mod analyze;
 pub mod classify;
 pub(crate) mod discover;
+pub mod gh;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -37,7 +42,8 @@ use crate::progress::{Phase, Progress};
 use crate::size::{Sizer, Split};
 use crate::walk::WalkStats;
 
-pub use classify::{classify, Facts, ORPHAN_REASON};
+pub use classify::{classify, commit_safety_only, Facts, ORPHAN_REASON};
+pub use gh::{Gh, MergedPr};
 
 /// Default idle days before a worktree counts as dormant.
 pub const DEFAULT_DORMANT_DAYS: u64 = 30;
@@ -56,6 +62,11 @@ pub struct ScanOptions {
     pub git_timeout: Duration,
     /// Max concurrent git processes; `None` = `min(8, cores)`.
     pub git_concurrency: Option<usize>,
+    /// Ask GitHub (via `gh`, when installed and signed in) whether
+    /// commit-safety `REVIEW` worktrees were squash-merged. Off by default
+    /// in the library (no network unless asked); the CLI turns it on unless
+    /// `--no-gh` / `--offline`.
+    pub github: bool,
 }
 
 impl ScanOptions {
@@ -67,6 +78,7 @@ impl ScanOptions {
             now: SystemTime::now(),
             git_timeout: DEFAULT_TIMEOUT,
             git_concurrency: None,
+            github: false,
         }
     }
 }
@@ -102,6 +114,11 @@ pub struct Worktree {
     /// Sum of `artifacts[].size_bytes`.
     pub artifact_bytes: u64,
     pub artifacts: Vec<Artifact>,
+    /// The merged PR whose head is this worktree's HEAD, when GitHub made it
+    /// `REMOVABLE` (see [`gh`]).
+    pub merged_pr: Option<MergedPr>,
+    /// `REVIEW` only because of commit safety (a PR lookup candidate).
+    pub(crate) squash_candidate: bool,
 }
 
 impl Worktree {
@@ -152,6 +169,7 @@ impl Worktree {
                 "main_repo": self.main_repo.as_deref().map(lossy),
                 "gitdir": lossy(&self.gitdir),
                 "artifact_bytes": self.artifact_bytes,
+                "merged_pr": self.merged_pr,
                 "artifacts": self.artifacts.iter().map(|a| json!({
                     "path": lossy(&a.path),
                     "size_bytes": a.size_bytes,
@@ -184,6 +202,8 @@ pub struct ScanStats {
     pub git_calls: u64,
     /// Entries that couldn't be read while measuring sizes.
     pub size_errors: u64,
+    /// `gh` processes run (squash-merge lookups).
+    pub gh_calls: u64,
     pub total: Duration,
 }
 
@@ -348,7 +368,7 @@ pub(crate) fn analyze_found(
         let git_job = s.spawn(|| {
             let t = Instant::now();
             let cache = analyze::RepoCache::default();
-            let wts: Vec<Worktree> = git.pool().install(|| {
+            let mut wts: Vec<Worktree> = git.pool().install(|| {
                 candidates
                     .par_iter()
                     .zip(pre.par_iter())
@@ -359,7 +379,14 @@ pub(crate) fn analyze_found(
                     })
                     .collect()
             });
-            (wts, t.elapsed())
+            let git_elapsed = t.elapsed();
+            let t = Instant::now();
+            let gh_calls = if opts.github {
+                apply_github(git, &mut wts)
+            } else {
+                0
+            };
+            (wts, git_elapsed, (t.elapsed(), gh_calls))
         });
         let t = Instant::now();
         let measured: Vec<Measured> = candidates
@@ -377,12 +404,18 @@ pub(crate) fn analyze_found(
         (git_out, (measured, size_elapsed))
     });
     progress.finish(Phase::Analyze);
-    let (mut worktrees, git_elapsed) = git_out;
+    let (mut worktrees, git_elapsed, (gh_elapsed, gh_calls)) = git_out;
     let (measured, size_elapsed) = size_out;
     timings.push(PhaseTiming {
         phase: Phase::Git,
         elapsed: git_elapsed,
     });
+    if gh_calls > 0 {
+        timings.push(PhaseTiming {
+            phase: Phase::Github,
+            elapsed: gh_elapsed,
+        });
+    }
     timings.push(PhaseTiming {
         phase: Phase::Size,
         elapsed: size_elapsed,
@@ -436,6 +469,7 @@ pub(crate) fn analyze_found(
             permission_denied: walk.permission_denied,
             other_errors: walk.other_errors,
             git_calls: git.calls(),
+            gh_calls,
             size_errors,
             total: started.elapsed(),
         },
@@ -466,12 +500,16 @@ fn build_worktree(
         size_bytes: 0,
         artifact_bytes: 0,
         artifacts: Vec::new(),
+        merged_pr: None,
+        squash_candidate: false,
     };
     if !pre.gitdir_exists {
         return wt;
     }
     let a = analyze::analyze(git, cache, c, pre, opts.now);
     let (status, reason) = classify(&a.facts, opts.dormant_after_days);
+    wt.squash_candidate = commit_safety_only(&a.facts, opts.dormant_after_days)
+        && a.branch.as_deref().is_some_and(|b| !b.starts_with('('));
     wt.status = status;
     wt.reason = reason;
     wt.idle_days = a.facts.idle_days;
@@ -484,6 +522,49 @@ fn build_worktree(
     wt.main_repo = pre.main_repo.clone();
     wt.locked = pre.locked;
     wt
+}
+
+/// Ask GitHub about every squash-merge candidate (when `gh` is installed and
+/// signed in) and apply the verdicts. Returns the number of `gh` calls.
+fn apply_github(git: &Git, wts: &mut [Worktree]) -> u64 {
+    let idx: Vec<usize> = (0..wts.len())
+        .filter(|i| wts[*i].squash_candidate)
+        .collect();
+    if idx.is_empty() {
+        return 0;
+    }
+    let Some(gh) = Gh::from_process() else {
+        return 0;
+    };
+    let jobs: Vec<(&Path, &str)> = idx
+        .iter()
+        .map(|i| {
+            let w = &wts[*i];
+            (w.path.as_path(), w.branch.as_deref().unwrap_or_default())
+        })
+        .collect();
+    // No progress phase of its own: sizing may still be advancing the
+    // shared analyze bar. The time shows up as the `gh` profile phase.
+    let verdicts = gh.verdicts(git, &jobs);
+    for (i, v) in idx.into_iter().zip(verdicts) {
+        apply_verdict(&mut wts[i], v);
+    }
+    gh.calls()
+}
+
+/// Reclassify one squash-merge candidate from GitHub's answer.
+pub(crate) fn apply_verdict(w: &mut Worktree, v: gh::Verdict) {
+    if !w.squash_candidate || w.status != Status::Review {
+        return;
+    }
+    let Some(reason) = v.reason() else {
+        return;
+    };
+    if let gh::Verdict::SquashMerged(pr) = v {
+        w.status = Status::Removable;
+        w.merged_pr = Some(pr);
+    }
+    w.reason = reason;
 }
 
 /// Total size plus candidate artifact folders (not yet ignore-checked).

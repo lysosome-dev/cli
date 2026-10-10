@@ -14,8 +14,9 @@ use crate::model::Status;
 use crate::projects;
 use crate::size::Sizer;
 use crate::worktree::analyze::{self, RepoCache};
-use crate::worktree::classify::classify;
+use crate::worktree::classify::{classify, commit_safety_only};
 use crate::worktree::discover::{self, Candidate};
+use crate::worktree::gh::{Gh, Verdict};
 
 use super::process;
 
@@ -27,6 +28,9 @@ pub(crate) struct Ctx<'a> {
     pub dormant_after_days: u64,
     pub now: SystemTime,
     pub path_env: Option<&'a OsString>,
+    /// `gh` for re-verifying squash merges; `None` when unavailable or
+    /// turned off (such items are then skipped).
+    pub gh: Option<&'a Gh>,
 }
 
 impl Ctx<'_> {
@@ -270,13 +274,32 @@ pub(crate) fn measure_dir(path: &Path) -> Option<(u64, bool)> {
     Some(projects::measure(&sizer, path))
 }
 
-/// Fresh analysis of one worktree: `(status, reason, main_repo)`.
-/// Fails if the folder is no longer the same linked worktree.
+/// Skip reason when a squash-merged worktree can't be re-verified.
+pub(crate) const GH_MISSING: &str = "gh is not available to re-verify the squash merge (install gh and sign in, or drop --no-gh / --offline)";
+
+/// Fresh state of one worktree ([`worktree`]).
+pub(crate) struct WorktreeNow {
+    pub status: Status,
+    pub reason: String,
+    pub main_repo: Option<PathBuf>,
+    /// Set when the worktree would be `REMOVABLE` only through a squash
+    /// merge that GitHub could not be asked to confirm: why. Nothing is
+    /// known to have changed, so callers say this instead of "changed".
+    pub unverified: Option<String>,
+}
+
+/// Fresh analysis of one worktree. Fails if the folder is no longer the
+/// same linked worktree.
+///
+/// `ask_github`: the worktree was planned because a PR was squash-merged;
+/// if it is still `REVIEW` only for commit safety, GitHub must confirm the
+/// merge again.
 pub(crate) fn worktree(
     ctx: &Ctx<'_>,
     path: &Path,
     gitdir: &Path,
-) -> Result<(Status, String, Option<PathBuf>), String> {
+    ask_github: bool,
+) -> Result<WorktreeNow, String> {
     real_target(path, true, None).map_err(|e| format!("worktree folder {e}"))?;
     let dotgit = path.join(".git");
     let is_file = fs::symlink_metadata(&dotgit).is_ok_and(|m| m.is_file());
@@ -296,9 +319,34 @@ pub(crate) fn worktree(
     if !pre.gitdir_exists {
         return Err("its git metadata is gone (orphan)".into());
     }
-    let a = analyze::analyze(ctx.git()?, &RepoCache::default(), &cand, &pre, ctx.now);
+    let git = ctx.git()?;
+    let a = analyze::analyze(git, &RepoCache::default(), &cand, &pre, ctx.now);
     let (status, reason) = classify(&a.facts, ctx.dormant_after_days);
-    Ok((status, reason, pre.main_repo))
+    // A squash-merged PR can vouch for commit-safety REVIEW worktrees; ask
+    // GitHub again rather than trusting the scan.
+    let mut now = WorktreeNow {
+        status,
+        reason,
+        main_repo: pre.main_repo,
+        unverified: None,
+    };
+    if ask_github && commit_safety_only(&a.facts, ctx.dormant_after_days) {
+        let Some(gh) = ctx.gh else {
+            now.unverified = Some(GH_MISSING.into());
+            return Ok(now);
+        };
+        match gh.verdict(git, path, a.branch.as_deref().unwrap_or_default()) {
+            v @ Verdict::SquashMerged(_) => {
+                now.status = Status::Removable;
+                now.reason = v.reason().unwrap_or_default();
+            }
+            Verdict::Unavailable(why) => {
+                now.unverified = Some(format!("could not re-verify the squash merge: {why}"));
+            }
+            Verdict::MergedEarlier(_) | Verdict::Unknown => {}
+        }
+    }
+    Ok(now)
 }
 
 /// Is `path` (inside `repo_dir`) still ignored by git, with nothing inside it

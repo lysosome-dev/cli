@@ -12,7 +12,8 @@ use std::process::Command;
 use lysosome_core::clean::{self, DirTrash, Executor, Outcome, PlanOptions, Scope, Selection};
 use lysosome_core::detector::ScanContext;
 use lysosome_core::detectors;
-use lysosome_core::model::Tier;
+use lysosome_core::model::{Status, Tier};
+use lysosome_core::worktree::Gh;
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -56,7 +57,9 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 fn plan(roots: Vec<PathBuf>, home: &Path, sel: &Selection) -> clean::Plan {
-    let ctx = ScanContext::new(roots, home.to_path_buf());
+    let mut ctx = ScanContext::new(roots, home.to_path_buf());
+    // Only the squash scenario has a (fake) gh and a GitHub remote.
+    ctx.github = true;
     let run = detectors::run(&detectors::project_detectors(), &ctx);
     clean::plan(&run.report.findings, sel, PlanOptions::default())
 }
@@ -79,6 +82,7 @@ fn state_changed_since_the_scan_is_skipped_with_a_reason() {
     let tmp = tempfile::tempdir().unwrap();
     worktrees_that_changed(tmp.path());
     artifacts_that_changed(tmp.path());
+    squash_merged_worktrees_are_reverified(tmp.path());
 }
 
 fn worktrees_that_changed(tmp: &Path) {
@@ -213,4 +217,92 @@ fn artifacts_that_changed(tmp: &Path) {
     assert_eq!(r.outcome, Outcome::Skipped, "{r:?}");
     assert!(r.message.contains("used recently"), "{r:?}");
     assert!(api_nm.is_dir());
+}
+
+fn git_out(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// A worktree REVIEW only because its commits are "unpushed" becomes
+/// REMOVABLE when GitHub (a fake `gh` on PATH) says its exact HEAD was a
+/// merged PR's head. `clean` asks again before removing it, and skips it
+/// when gh can't be asked.
+fn squash_merged_worktrees_are_reverified(tmp: &Path) {
+    let fx = fixture(&tmp.join("squash"), "make_worktrees.sh");
+    let home = fx.join("home");
+    let wt = fx.join("code/app-unpushed");
+    git(
+        &fx.join("code/app"),
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/acme/app.git",
+        ],
+    );
+    let head = git_out(&wt, &["rev-parse", "HEAD"]);
+    let bin = fx.join("fake-bin");
+    fs::create_dir_all(&bin).unwrap();
+    let log = fx.join("gh.log");
+    let gh = bin.join("gh");
+    fs::write(
+        &gh,
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{log}'\ncase \"$1\" in\n  auth) exit 0;;\n  repo) echo '{{\"defaultBranchRef\":{{\"name\":\"main\"}},\"owner\":{{\"login\":\"acme\"}}}}';;\n  pr) echo '[{{\"number\":42,\"headRefOid\":\"{head}\",\"mergedAt\":\"2026-01-01T00:00:00Z\",\"url\":\"https://github.com/acme/app/pull/42\",\"baseRefName\":\"main\",\"headRepositoryOwner\":{{\"login\":\"acme\"}}}}]';;\n  *) exit 1;;\nesac\n",
+            log = log.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut path = std::ffi::OsString::from(&bin);
+    path.push(":");
+    path.push(&old_path);
+    std::env::set_var("PATH", &path);
+
+    let sel = Selection {
+        scopes: [Scope::Worktrees].into_iter().collect(),
+        only: vec![wt.to_string_lossy().into_owned()],
+        ..Selection::default()
+    };
+    let p = plan(vec![fx.join("code")], &home, &sel);
+    assert_eq!(p.items.len(), 1, "{:#?}", p.items);
+    assert_eq!(p.items[0].status, Status::Removable);
+    assert_eq!(p.items[0].reason, "clean, squash-merged in PR #42");
+    let calls = fs::read_to_string(&log).unwrap();
+    assert!(
+        calls.contains("pr list --repo github.com/acme/app --state merged --head unpushed"),
+        "{calls}"
+    );
+
+    let trash = DirTrash::new(fx.join("fake-trash"));
+    // No gh at clean time: skipped, never acted on unchecked.
+    let ex = Executor::new(&trash, home.clone(), None);
+    let r = &ex.execute(&p, &mut |_, _, _| {}).unwrap()[0];
+    assert_eq!(r.outcome, Outcome::Skipped, "{r:?}");
+    assert!(r.message.contains("gh is not available"), "{r:?}");
+    assert!(wt.is_dir());
+
+    // With gh, it is asked again, then the worktree goes (branch kept).
+    let before = fs::read_to_string(&log).unwrap().lines().count();
+    let mut ex = Executor::new(&trash, home.clone(), None);
+    ex.gh = Gh::from_process();
+    assert!(ex.gh.is_some());
+    let r = &ex.execute(&p, &mut |_, _, _| {}).unwrap()[0];
+    assert_eq!(r.outcome, Outcome::Done, "{r:?}");
+    assert!(!wt.exists());
+    assert!(fs::read_to_string(&log).unwrap().lines().count() > before);
+    assert_eq!(
+        git_out(&fx.join("code/app"), &["rev-parse", "unpushed"]),
+        head,
+        "the branch and its commits are kept"
+    );
+    std::env::set_var("PATH", old_path);
 }

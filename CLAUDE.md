@@ -22,7 +22,7 @@ All three (fmt, clippy, test) must pass; CI runs them on macOS and Linux.
 ## Non-negotiable safety rules (docs/SPEC.md §2)
 1. Scanning never modifies anything. Every git call uses `git --no-optional-locks`.
 2. Read index/HEAD/logs/HEAD mtimes before running git.
-3. Never remove/suggest removing a worktree that is dirty, has untracked files, is locked, or has commits neither merged nor pushed.
+3. Never remove/suggest removing a worktree that is dirty, has untracked files, is locked, or has commits neither merged nor pushed (a squash merge counts only when `gh` confirms a PR merged into the default branch containing HEAD; re-verified before removal).
 4. Only count artifact folders that `git check-ignore` confirms.
 5. Deletion defaults to dry-run, uses each tool's own cleanup command, else macOS Trash.
 6. Never follow symlinks.

@@ -134,7 +134,13 @@ impl ActionKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Guard {
     /// A linked worktree that must still be `REMOVABLE`, owned by `main_repo`.
-    Worktree { main_repo: PathBuf, gitdir: PathBuf },
+    /// `squash_pr`: it was REMOVABLE because that PR was squash-merged, so
+    /// GitHub must confirm it again.
+    Worktree {
+        main_repo: PathBuf,
+        gitdir: PathBuf,
+        squash_pr: Option<u64>,
+    },
     /// An ignored artifact folder inside a dormant (REMOVABLE or REVIEW)
     /// worktree.
     WorktreeArtifact { worktree: PathBuf, gitdir: PathBuf },
@@ -440,6 +446,11 @@ fn item_for(
                 Guard::Worktree {
                     main_repo: main_repo.clone(),
                     gitdir,
+                    squash_pr: f
+                        .details
+                        .get("merged_pr")
+                        .and_then(|p| p.get("number"))
+                        .and_then(|n| n.as_u64()),
                 },
             );
             item.command = worktree_remove_argv(&main_repo, &f.path);

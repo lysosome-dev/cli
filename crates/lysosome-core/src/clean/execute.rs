@@ -17,6 +17,7 @@ use super::{worktree_remove_argv, ActionKind, Guard, Plan, PlanItem};
 use crate::git::{Git, REPO_ENV_VARS};
 use crate::model::Status;
 use crate::worktree::discover;
+use crate::worktree::gh::Gh;
 
 /// Message (prefix) of items not acted on because of an interrupt.
 pub const INTERRUPTED: &str = "not attempted: interrupted";
@@ -187,6 +188,9 @@ pub struct Executor<'a> {
     /// Set (e.g. by a Ctrl-C handler) to stop after the current item; the
     /// remaining items are reported `skipped: not attempted: interrupted`.
     pub stop: Option<&'a AtomicBool>,
+    /// `gh` to re-verify worktrees planned because their PR was
+    /// squash-merged. `None` (the default): such worktrees are skipped.
+    pub gh: Option<Gh>,
 }
 
 impl<'a> Executor<'a> {
@@ -201,6 +205,7 @@ impl<'a> Executor<'a> {
             git_env: Vec::new(),
             log,
             stop: None,
+            gh: None,
         }
     }
 
@@ -251,11 +256,13 @@ impl<'a> Executor<'a> {
                         dormant_after_days: self.dormant_after_days,
                         now: SystemTime::now(),
                         path_env: self.path_env.as_ref(),
+                        gh: self.gh.as_ref(),
                     };
                     let mut r = self.one(&ctx, item, plan.permanent);
                     // Ctrl-C can kill a re-check's git process; a skip then
                     // says nothing about the item itself.
                     if r.outcome == Outcome::Skipped
+                        && r.message != INTERRUPTED
                         && self.stop.is_some_and(|s| s.load(Ordering::SeqCst))
                     {
                         r.message = format!("{INTERRUPTED} (during the re-check: {})", r.message);
@@ -301,17 +308,30 @@ impl<'a> Executor<'a> {
     ) -> Result<ItemResult, String> {
         let path = &item.path;
         match &item.guard {
-            Guard::Worktree { main_repo, gitdir } => {
+            Guard::Worktree {
+                main_repo,
+                gitdir,
+                squash_pr,
+            } => {
                 if item.action != ActionKind::WorktreeRemove {
                     return Err("internal: unexpected action for a worktree".into());
                 }
                 recheck::protected(path, ctx.home)?;
-                let (status, reason, main) = recheck::worktree(ctx, path, gitdir)
+                let now = recheck::worktree(ctx, path, gitdir, squash_pr.is_some())
                     .map_err(|e| format!("changed since scan: {e}"))?;
-                if status != Status::Removable {
-                    return Err(changed(status, &reason));
+                if now.status != Status::Removable {
+                    // GitHub couldn't be asked: nothing is known to have changed.
+                    return Err(now
+                        .unverified
+                        .unwrap_or_else(|| changed(now.status, &now.reason)));
                 }
-                if !main
+                // A gh lookup can take seconds; honor a Ctrl-C that came in
+                // meanwhile rather than acting on this item.
+                if self.stop.is_some_and(|s| s.load(Ordering::SeqCst)) {
+                    return Err(INTERRUPTED.into());
+                }
+                if !now
+                    .main_repo
                     .as_deref()
                     .is_some_and(|m| discover::same_path(m, main_repo))
                 {
@@ -324,10 +344,11 @@ impl<'a> Executor<'a> {
                 if !path.starts_with(worktree) || path == worktree {
                     return Err("not inside its worktree".into());
                 }
-                let (status, reason, _) = recheck::worktree(ctx, worktree, gitdir)
+                // REVIEW is fine here, so GitHub's answer can't matter.
+                let now = recheck::worktree(ctx, worktree, gitdir, false)
                     .map_err(|e| format!("changed since scan: {e}"))?;
-                if !matches!(status, Status::Removable | Status::Review) {
-                    return Err(changed(status, &reason));
+                if !matches!(now.status, Status::Removable | Status::Review) {
+                    return Err(changed(now.status, &now.reason));
                 }
                 recheck::real_target(path, true, None)
                     .map_err(|e| format!("changed since scan: {e}"))?;

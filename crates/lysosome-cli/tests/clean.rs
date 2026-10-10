@@ -990,3 +990,80 @@ fn interactive_with_nothing_to_pick_explains_what_is_kept() {
     );
     assert!(!text.contains("Choose what to clean"), "{text}");
 }
+
+#[test]
+fn squash_merged_worktrees_are_cleaned_after_asking_github_again() {
+    let fx = Fixture::new("make_worktrees.sh");
+    fx.git(
+        "code/app",
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/acme/app.git",
+        ],
+    );
+    let head = fx.git("code/app-unpushed", &["rev-parse", "HEAD"]);
+    let head = head.trim();
+    let bin = fx.p("fake-bin");
+    fs::create_dir_all(&bin).unwrap();
+    let log = fx.p("gh.log");
+    // Answers "merged at HEAD" to the first lookup only: the scan's. The
+    // re-check right before removal asks again and then gets nothing.
+    let once = fx.p("gh-answered");
+    fs::write(
+        bin.join("gh"),
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{log}'\ncase \"$1\" in\n  auth) exit 0;;\n  repo) echo '{{\"defaultBranchRef\":{{\"name\":\"main\"}},\"owner\":{{\"login\":\"acme\"}}}}';;\n  pr) if [ -e '{once}' ] && [ -n \"$GH_ONCE\" ]; then echo '[]'; else touch '{once}'; echo '[{{\"number\":42,\"headRefOid\":\"{head}\",\"mergedAt\":\"2026-01-01T00:00:00Z\",\"url\":\"https://github.com/acme/app/pull/42\",\"baseRefName\":\"main\",\"headRepositoryOwner\":{{\"login\":\"acme\"}}}}]'; fi;;\n  *) exit 1;;\nesac\n",
+            log = log.display(),
+            once = once.display(),
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(bin.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
+    let mut path = std::ffi::OsString::from(&bin);
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+    let code = fx.s("code");
+    let only = fx.s("code/app-unpushed");
+    let run = |extra: &[&str], once: bool| {
+        let mut cmd = fx.cmd();
+        cmd.env("PATH", &path)
+            .args([
+                "clean",
+                code.as_str(),
+                "--worktrees",
+                "--only",
+                only.as_str(),
+            ])
+            .args(extra);
+        if once {
+            cmd.env("GH_ONCE", "1");
+        }
+        cmd.output().unwrap()
+    };
+
+    // --no-gh: it stays REVIEW, nothing is planned, gh never runs.
+    let out = run(&["--no-gh", "--json"], false);
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    validate(&doc);
+    assert_eq!(doc["items"].as_array().unwrap().len(), 0);
+    assert!(!log.exists());
+
+    // The PR "disappears" between scan and removal: skipped, kept.
+    let out = run(&["--yes", "--json"], true);
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    validate(&doc);
+    let item = &doc["items"][0];
+    assert_eq!(item["reason"], "clean, squash-merged in PR #42");
+    assert_eq!(item["result"]["outcome"], "skipped", "{item}");
+    assert!(fx.p("code/app-unpushed").is_dir());
+
+    // Confirmed again at removal time: removed with git, branch kept.
+    let out = run(&["--yes", "--json"], false);
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["items"][0]["result"]["outcome"], "done", "{doc}");
+    assert!(!fx.p("code/app-unpushed").exists());
+    assert_eq!(fx.git("code/app", &["rev-parse", "unpushed"]).trim(), head);
+}

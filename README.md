@@ -158,14 +158,26 @@ lysosome worktrees --json | jq .summary  # machine-readable output
 
 | Status | Meaning |
 |---|---|
-| `REMOVABLE` | Idle `--days`+ (default 30), clean, and its commits are safe: merged into the default branch or fully pushed. |
+| `REMOVABLE` | Idle `--days`+ (default 30), clean, and its commits are safe: merged into the default branch, fully pushed, or (with `gh`) its exact `HEAD` was squash-merged in a GitHub PR. |
 | `REVIEW` | Idle, but holding something that might matter: uncommitted changes, untracked files, a lock, or commits that exist nowhere else. The reason is shown underneath. |
 | `ORPHAN` | Its parent repository was moved or deleted, so git can no longer manage it. |
 | `ACTIVE` | Used recently. Hidden unless you pass `--all`. |
 
 "Idle" is the newest of the worktree's git index / `HEAD` / reflog timestamps and its last commit. **ARTIFACTS** is the space in git-ignored build and dependency folders (`node_modules`, `target`, `.venv`, `dist`, ...) inside the worktree. You can strip those even from worktrees you keep.
 
-Squash-merged branches show as `REVIEW` (git can't tell that a squash merge landed). That's the safe default.
+**Squash merges.** Git can't tell that a branch was squash-merged on GitHub: the squash commit has a different SHA and the remote branch is usually deleted, so the worktree's commits look "unpushed, not merged". When the [GitHub CLI](https://cli.github.com) (`gh`) is installed and signed in, lysosome asks GitHub about worktrees that are `REVIEW` *only* for that reason (clean, unlocked, on a branch):
+
+```
+gh pr list --repo <host/owner/repo> --state merged --head <branch> --json number,headRefOid,mergedAt,url,baseRefName,headRepositoryOwner
+```
+
+Only PRs merged into the repository's default branch, from a branch of the repository itself (its current owner per `gh repo view --json defaultBranchRef,owner`, so renamed repositories still match; not a fork with the same branch name), count. The repository is the one the branch tracks (else `origin`); forks whose PRs live upstream and SSH host aliases aren't matched and simply stay `REVIEW`.
+
+- A merged PR whose last commit is **exactly** the worktree's `HEAD` makes it `REMOVABLE`: "clean, squash-merged in PR #123" (JSON: `details.merged_pr {number, url}`).
+- A merged PR with a different head keeps it `REVIEW` with a clearer reason: "PR #123 was merged, but 2 local commits came after it".
+- No `gh`, not signed in, a timeout, no GitHub remote or no merged PR: nothing changes (`REVIEW` stays the safe default).
+
+`gh` runs like every other tool lysosome asks: from `/`, never prompting (`GH_PROMPT_DISABLED`), no update checks, a 15 s timeout, at most 4 lookups at a time. `lysosome clean` asks GitHub again right before removing such a worktree and skips it if `gh` can't be asked; `git worktree remove` keeps the branch either way. Turn it off with `--no-gh` (or `--offline`).
 
 ### Flags
 
@@ -177,6 +189,8 @@ Squash-merged branches show as `REVIEW` (git can't tell that a squash merge land
 | `--top N` | `30` | Rows (or, in `scan`, projects) to show per section |
 | `--json` | | Print the versioned JSON report instead of a table |
 | `--profile` | | Print phase (walk / git / size / artifacts) and per-detector timings to stderr |
+| `--no-gh` | | Don't ask GitHub (via `gh`) whether `REVIEW` worktrees were squash-merged |
+| `--offline` | | Never use the network (today: same as `--no-gh`) |
 | `--no-color` | | Disable color (`NO_COLOR` is honored too; color is off when piped) |
 
 ## What it finds: caches, AI models, Docker, Xcode
@@ -324,7 +338,7 @@ These are non-negotiable. Breaking any of them is a release-blocking bug.
 
 1. **Scanning never modifies anything.** No writes, no index refresh, no lock files. Every git call uses `git --no-optional-locks`. A test snapshots every file's mtime and hash before and after a scan.
 2. **Timestamps are read before git runs**, so git can never skew "last used".
-3. **Never remove or suggest removing a worktree** that has uncommitted changes or untracked files, is locked, or has commits that are neither merged into the default branch nor pushed.
+3. **Never remove or suggest removing a worktree** that has uncommitted changes or untracked files, is locked, or has commits that are neither merged into the default branch nor pushed. (A squash merge counts as merged only when `gh` shows a PR merged into the default branch whose head contains `HEAD`, re-verified right before removal.)
 4. **A folder only counts as an artifact if git ignores it** (`git check-ignore`). Tracked source is never called junk.
 5. **Deletion goes to the Trash by default**, uses each tool's own cleanup command (`git worktree remove`, `docker builder prune`, `brew cleanup`, ...), defaults to dry-run, and re-checks every item right before acting (see [Clean up safely](#clean-up-safely)).
 6. **Symlinks are never followed** during walks or size calculations.
@@ -336,7 +350,7 @@ These are non-negotiable. Breaking any of them is a release-blocking bug.
 Only when you ask. `lysosome scan`, `worktrees` and `caches` never change anything on disk (a test checks every file's mtime and hash before and after a scan). `lysosome clean` is a dry run unless you pass `--yes` or answer `y` at its prompt, and even then it only removes `REMOVABLE` items (the one exception you opt into is `--strip-artifacts`, which moves git-ignored build folders out of dormant worktrees, `REVIEW` ones included, while keeping the worktrees): worktrees go through `git worktree remove` (never `--force`), caches through the tool's own cleanup command, and folders to the Trash unless you add `--permanent`. Every action is logged (see [Clean up safely](#clean-up-safely)).
 
 **Is my data sent anywhere?**
-No. lysosome has no telemetry, no analytics and no network code; it never phones home or checks for updates. Everything stays on your machine. To answer "where is your cache?" it runs the developer tools you already have (`git`, `brew`, `npm`, `docker`, `xcrun`...) locally, with their auto-updates and downloads switched off, and it never runs `git fetch`. It doesn't call `gh` or any GitHub API. During `clean --yes`, the cleanup commands it runs are the tools' own (`brew cleanup`, `pnpm store prune`...), so they behave as they would if you ran them yourself.
+No telemetry and no analytics, and lysosome has no network code of its own; it never phones home or checks for updates. Everything stays on your machine. To answer "where is your cache?" it runs the developer tools you already have (`git`, `brew`, `npm`, `docker`, `xcrun`...) locally, with their auto-updates and downloads switched off, and it never runs `git fetch`. The one exception is opt-out and read-only: if the GitHub CLI (`gh`) is installed and already signed in, lysosome runs `gh pr list --state merged --head <branch>` for dormant worktrees that look unpushed, to spot branches that were squash-merged (see [Squash merges](#what-the-statuses-mean)). Only the repository name and branch name go to GitHub, through your own `gh`; nothing else leaves your machine. Turn it off with `--no-gh` or `--offline`. During `clean --yes`, the cleanup commands it runs are the tools' own (`brew cleanup`, `pnpm store prune`...), so they behave as they would if you ran them yourself.
 
 **How does it know a worktree's commits are pushed?**
 From your local remote-tracking refs, since it never fetches. Run `git fetch` in a repo first if you want the freshest answer; until then a recently pushed branch may show as `REVIEW`, never the other way round.

@@ -45,6 +45,7 @@ pub fn run(cmd: &ScanCmdArgs, global: &GlobalArgs) -> Result<String> {
     let mut ctx = ScanContext::new(roots, home.clone().unwrap_or_default());
     ctx.dormant_after_days = args.days;
     ctx.max_depth = args.depth;
+    ctx.github = args.net.github();
     if let Some(s) = &spinner {
         ctx.progress = s;
     } else {
@@ -140,13 +141,14 @@ fn render_profile(run: &ScanRun, p: &Painter) -> String {
             out,
             "{}",
             p.dim(format!(
-                "        {} · {} · {} · {} artifact candidates · {} git calls on {} threads · {} size read errors",
+                "        {} · {} · {} · {} artifact candidates · {} git calls on {} threads · {} gh calls · {} size read errors",
                 plural(proj.worktrees.stats.dirs_visited, "folder", "folders"),
                 plural(s.repos, "repo", "repos"),
                 plural(proj.worktrees.worktrees.len() as u64, "worktree", "worktrees"),
                 thousands(s.candidates),
                 thousands(s.git_calls),
                 lysosome_core::git::default_concurrency(),
+                thousands(proj.worktrees.stats.gh_calls),
                 thousands(s.size_errors + proj.worktrees.stats.size_errors),
             ))
         )

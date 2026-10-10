@@ -22,6 +22,9 @@ pub struct ScanContext<'a> {
     pub dormant_after_days: u64,
     pub max_depth: usize,
     pub now: SystemTime,
+    /// Squash-merge lookups through `gh` (see [`worktree::gh`]). Off by
+    /// default (no network unless asked).
+    pub github: bool,
     pub progress: &'a dyn Progress,
     /// The project walk, computed once and shared by the worktree and artifact detectors.
     projects: OnceLock<std::result::Result<Arc<ProjectScan>, Arc<Error>>>,
@@ -35,6 +38,7 @@ impl<'a> ScanContext<'a> {
             dormant_after_days: worktree::DEFAULT_DORMANT_DAYS,
             max_depth: worktree::DEFAULT_MAX_DEPTH,
             now: SystemTime::now(),
+            github: false,
             progress: &NoProgress,
             projects: OnceLock::new(),
         }
@@ -49,6 +53,7 @@ impl<'a> ScanContext<'a> {
                 opts.dormant_after_days = self.dormant_after_days;
                 opts.max_depth = self.max_depth;
                 opts.now = self.now;
+                opts.github = self.github;
                 projects::scan(&opts, self.progress)
                     .map(Arc::new)
                     .map_err(Arc::new)

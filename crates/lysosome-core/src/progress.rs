@@ -23,6 +23,8 @@ pub enum Phase {
     Analyze,
     /// Project artifacts in main repos: ignore-check, last activity, sizing.
     Artifacts,
+    /// Asking GitHub (`gh`) about possibly squash-merged worktrees.
+    Github,
 }
 
 impl Phase {
@@ -34,6 +36,7 @@ impl Phase {
             Phase::IgnoreCheck => "ignore-check",
             Phase::Analyze => "analyze",
             Phase::Artifacts => "artifacts",
+            Phase::Github => "gh",
         }
     }
 }
