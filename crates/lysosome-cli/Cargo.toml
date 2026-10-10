@@ -31,7 +31,7 @@ console = { version = "0.16", default-features = false, features = ["std", "ansi
 dirs = "6"
 indicatif = "0.18"
 libc = "0.2"
-lysosome-core = { path = "../lysosome-core", version = "0.2.1" }
+lysosome-core = { path = "../lysosome-core", version = "0.3.0" }
 owo-colors = "4.4"
 serde_json = "1"
 

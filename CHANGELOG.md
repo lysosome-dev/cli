@@ -7,6 +7,38 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-10
+
+### Added
+
+- `lysosome clean -i` / `--interactive` (#16): pick what to clean in a
+  terminal checklist grouped by category (size, tier badge, path). Items of
+  the `--tier` tiers start ticked (cheap ones by default), costly ones are
+  listed unticked, and `REVIEW` items are shown greyed out with their reason.
+  `space` toggles, `a` ticks all/none, `enter` continues to the final plan
+  and a `y/N` confirmation; execution uses the same per-item re-checks.
+  Refuses to run without a terminal.
+- Squash-merge awareness (#18): when `gh` is installed and signed in, dormant
+  worktrees that are `REVIEW` only because their commits look unpushed are
+  looked up on GitHub. If a PR merged into the default branch (from the repo
+  itself) has the worktree's HEAD as, or inside, its last commit, and the
+  worktree is clean and unlocked, it becomes `REMOVABLE` ("clean,
+  squash-merged in PR #123", JSON `details.merged_pr {number, url}`); a
+  merged PR with another head keeps `REVIEW` with a clearer reason. `clean`
+  re-verifies with `gh` before removing and skips the worktree if `gh` can't
+  be asked. `gh` runs sandboxed (from `/`, never prompting, timeouts, at most
+  4 at a time). New flags `--no-gh` and `--offline` on `scan`, `worktrees`
+  and `clean`.
+- First-run polish (#28): a bare `lysosome` starts with a three-line "Try:"
+  quick start above the help; every error carries a `hint:` with a fix; with
+  `--json`, errors are printed on stdout as `{"error": {"code", "message",
+  "hint"}}` with a non-zero exit (`schema/error.schema.json`; exit 2 for
+  command-line mistakes).
+- Releases publish `lysosome-core` and `lysosome` to crates.io, so
+  `cargo install --locked lysosome` works.
+- Issue and pull request templates, a code of conduct, Dependabot, and a
+  `cargo-deny` CI check (licenses, RustSec advisories, duplicate crates).
+
 ### Changed
 
 - Faster artifact sizing (#26): main-repo artifact folders are measured in
@@ -15,49 +47,19 @@ All notable changes to this project are documented here. The format follows
   confirms them instead of after every repository's git checks. On macOS a
   directory's allocation and entry count come from its parent's
   `getattrlistbulk` batch (no `fstat` per directory, empty ones never opened).
-
-### Fixed
-
-- `lysosome caches` counted a simulator disk image twice when two runtime
-  entries shared it; it is now listed once (`details.shared_with_runtime_ids`).
-
 - Tier colors match the brand (#24): regenerable is GFP mint, expensive is
   amber, review is DAPI blue-violet (exact on truecolor terminals, nearest
   xterm-256 color on 256-color ones, else green / yellow / bright blue), in
   `scan`, `caches`, `clean` and the `REMOVABLE` / `REVIEW` statuses. Light
   terminals (`COLORFGBG`, or `LYSOSOME_THEME=light`) get the brand's
-  light-theme hues.
-  `NO_COLOR` and piped output stay plain; `--json` is unchanged.
+  light-theme hues. `NO_COLOR` and piped output stay plain; `--json` is
+  unchanged.
 
-### Added
+### Fixed
 
-- First-run polish (#28): a bare `lysosome` starts with a three-line
-  "Try:" quick start above the help; every error carries a `hint:` with a
-  fix; with `--json`, errors are printed on stdout as
-  `{"error": {"code", "message", "hint"}}` with a non-zero exit
-  (`schema/error.schema.json`; exit 2 for command-line mistakes).
-
-- `lysosome clean -i` / `--interactive` (#16): pick what to clean in a
-  terminal checklist grouped by category (size, tier badge, path). Items of
-  the `--tier` tiers start ticked (cheap ones by default), costly ones are
-  listed unticked, and `REVIEW` items are
-  shown greyed out with their reason. `space` toggles, `a` ticks all/none,
-  `enter` continues to the final plan and a `y/N` confirmation; execution
-  uses the same per-item re-checks. Refuses to run without a terminal.
-- Releases publish `lysosome-core` and `lysosome` to crates.io once the
-  maintainers add a token, so `cargo install lysosome` will work.
-- Issue and pull request templates, a code of conduct, Dependabot, and a
-  `cargo-deny` CI check (licenses, RustSec advisories, duplicate crates).
-- Squash-merge awareness (#18): when `gh` is installed and signed in, dormant
-  worktrees that are `REVIEW` only because their commits look unpushed are
-  looked up with `gh pr list --state merged --head <branch>`. If a merged
-  PR's last commit is exactly the worktree's HEAD (and it is clean and
-  unlocked) it becomes `REMOVABLE` ("clean, squash-merged in PR #123", JSON
-  `details.merged_pr {number, url}`); a merged PR with another head keeps
-  `REVIEW` with a clearer reason. `clean` re-verifies with `gh` before
-  removing and skips the worktree if `gh` is unavailable. `gh` runs
-  sandboxed (from `/`, never prompting, timeouts, at most 4 at a time).
-  New flags `--no-gh` and `--offline` on `scan`, `worktrees` and `clean`.
+- `lysosome caches` counted a simulator disk image twice when two runtime
+  entries shared it; it is now listed once, as a review item
+  (`details.shared_with_runtime_ids`).
 
 ## [0.2.1] - 2026-10-10
 
@@ -148,7 +150,8 @@ First release.
   and a Homebrew tap (`brew install lysosome-dev/tap/lysosome`). Archives
   include man pages and shell completions.
 
-[Unreleased]: https://github.com/lysosome-dev/cli/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/lysosome-dev/cli/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/lysosome-dev/cli/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/lysosome-dev/cli/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/lysosome-dev/cli/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lysosome-dev/cli/releases/tag/v0.1.0
