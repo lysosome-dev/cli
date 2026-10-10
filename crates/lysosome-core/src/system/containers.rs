@@ -15,8 +15,6 @@ const CAT: Category = Category::Containers;
 pub(super) const TABLE: [(&str, Category, super::ScanFn); 2] =
     [("docker", CAT, docker), ("orbstack", CAT, orbstack)];
 
-/// How long the daemon gets to answer `docker version` before we give up.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// `docker system df -v` computes sizes and can take a while.
 const DF_TIMEOUT: Duration = Duration::from_secs(45);
 
@@ -28,7 +26,7 @@ fn docker(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
         .output_with_timeout(
             "docker",
             ["version", "--format", "{{.Server.Version}}"],
-            PROBE_TIMEOUT,
+            env.probe_timeout,
         )
         .is_none_or(|v| v.is_empty())
     {

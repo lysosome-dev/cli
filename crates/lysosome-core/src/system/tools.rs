@@ -11,12 +11,14 @@ use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
-
-use wait_timeout::ChildExt;
+use std::time::{Duration, Instant};
 
 /// Default per-call timeout for "where is your cache?" questions.
 pub const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Default timeout for liveness probes (`docker version`): a daemon that is
+/// up answers in milliseconds.
+pub const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Spawns tool subprocesses with a fixed `PATH` and `HOME`.
 #[derive(Debug, Clone)]
@@ -100,12 +102,22 @@ impl Tools {
                 buf
             })
         });
-        let status = match child.wait_timeout(timeout) {
-            Ok(Some(s)) => Some(s),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                None
+        // Poll instead of `wait_timeout`: its SIGCHLD-based wait can miss an
+        // exit when several threads wait on children at once.
+        let deadline = Instant::now() + timeout;
+        let mut pause = Duration::from_millis(2);
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(s)) => break Some(s),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(pause);
+                    pause = (pause * 2).min(Duration::from_millis(50));
+                }
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
             }
         };
         let stdout = reader.and_then(|r| r.join().ok()).unwrap_or_default();

@@ -1,5 +1,6 @@
 //! `lysosome` — the disk cleaner for the agentic coding era.
 
+mod caches;
 mod completions;
 mod progress;
 mod ui;
@@ -36,7 +37,8 @@ Examples:
   lysosome worktrees                       Scan your home folder
   lysosome worktrees ~/code ~/.worktrees   Scan specific folders (faster)
   lysosome worktrees --days 14             Call anything idle 14+ days dormant
-  lysosome worktrees --json | jq .summary  Machine-readable output";
+  lysosome worktrees --json | jq .summary  Machine-readable output
+  lysosome caches                          Package caches, AI models, Docker, Xcode";
 
 const WORKTREE_HELP: &str = "\
 Statuses:
@@ -53,6 +55,21 @@ Examples:
 
 Nothing is ever changed. Suggested `git worktree remove` commands are printed
 for you to review and run yourself.";
+
+const CACHES_HELP: &str = "\
+Tiers:
+  cache    cheap to rebuild (package caches, DerivedData, editor caches)
+  costly   rebuildable but slow to get back (AI models, Docker images,
+           simulator runtimes, emulators); JSON adds details.redownload_bytes
+  review   may hold something you can't rebuild (archives, Docker volumes)
+
+Examples:
+  lysosome caches                          Everything, grouped by category
+  lysosome caches --category ai_models     Just local AI models
+  lysosome caches --json | jq '.findings[] | {name: .details.name, size_bytes}'
+
+Tools are only asked where their data lives (with timeouts); Docker is only
+queried if it's already running. Nothing is ever changed.";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -88,6 +105,10 @@ enum Command {
     /// Find dormant git worktrees and the disk they're holding
     #[command(after_help = WORKTREE_HELP)]
     Worktrees(WorktreesArgs),
+
+    /// Find package caches, AI models, Docker, Xcode, Android and editor data
+    #[command(visible_alias = "system", after_help = CACHES_HELP)]
+    Caches(caches::CachesArgs),
 
     /// Print a shell completion script (bash, zsh, fish, powershell, elvish)
     #[command(after_help = completions::COMPLETIONS_HELP)]
@@ -135,6 +156,7 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Some(Command::Worktrees(args)) => worktrees::run(args, &cli.global),
+        Some(Command::Caches(args)) => caches::run(args, &cli.global),
         Some(Command::Completions(args)) => completions::completions(Cli::command(), args),
     };
     match result {

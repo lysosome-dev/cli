@@ -50,16 +50,25 @@ pub struct SystemEnv {
     vars: HashMap<String, OsString>,
     /// Timeout for ordinary "where is your cache?" tool calls.
     pub tool_timeout: Duration,
+    /// Timeout for quick liveness probes (is the Docker daemon up?).
+    pub probe_timeout: Duration,
 }
 
 impl SystemEnv {
-    /// Snapshot of the current process environment.
+    /// Snapshot of the current process environment. `LYSOSOME_TOOL_TIMEOUT_MS`
+    /// overrides both the tool and the probe timeouts.
     pub fn from_process() -> Self {
+        let vars: HashMap<String, OsString> = std::env::vars_os()
+            .filter_map(|(k, v)| Some((k.into_string().ok()?, v)))
+            .collect();
+        let overridden = vars
+            .get("LYSOSOME_TOOL_TIMEOUT_MS")
+            .and_then(|v| v.to_str()?.parse::<u64>().ok())
+            .map(Duration::from_millis);
         SystemEnv {
-            vars: std::env::vars_os()
-                .filter_map(|(k, v)| Some((k.into_string().ok()?, v)))
-                .collect(),
-            tool_timeout: tools::DEFAULT_TOOL_TIMEOUT,
+            vars,
+            tool_timeout: overridden.unwrap_or(tools::DEFAULT_TOOL_TIMEOUT),
+            probe_timeout: overridden.unwrap_or(tools::DEFAULT_PROBE_TIMEOUT),
         }
     }
 
@@ -75,6 +84,7 @@ impl SystemEnv {
                 .map(|(k, v)| (k.into(), v.into()))
                 .collect(),
             tool_timeout: tools::DEFAULT_TOOL_TIMEOUT,
+            probe_timeout: tools::DEFAULT_PROBE_TIMEOUT,
         }
     }
 
@@ -156,26 +166,43 @@ pub fn detectors_with(env: Arc<SystemEnv>) -> Vec<Box<dyn Detector>> {
         .collect()
 }
 
+/// Result of [`run`].
+#[derive(Debug, Default)]
+pub struct RunOutput {
+    /// All findings, largest first.
+    pub findings: Vec<Finding>,
+    /// Wall time of each detector, in detector order.
+    pub timings: Vec<(&'static str, Duration)>,
+}
+
 /// Run `detectors` concurrently (one thread each: many block on tool
-/// subprocesses) and return all findings, largest first. A detector that
+/// subprocesses; sizing inside them is parallel on rayon). A detector that
 /// returns an error contributes nothing.
-pub fn run(detectors: &[Box<dyn Detector>], ctx: &ScanContext<'_>) -> Vec<Finding> {
-    let mut findings: Vec<Finding> = std::thread::scope(|s| {
+pub fn run(detectors: &[Box<dyn Detector>], ctx: &ScanContext<'_>) -> RunOutput {
+    let results: Vec<(&'static str, Duration, Vec<Finding>)> = std::thread::scope(|s| {
         let handles: Vec<_> = detectors
             .iter()
-            .map(|d| s.spawn(move || d.scan(ctx).unwrap_or_default()))
+            .map(|d| {
+                s.spawn(move || {
+                    let start = std::time::Instant::now();
+                    let f = d.scan(ctx).unwrap_or_default();
+                    (d.id(), start.elapsed(), f)
+                })
+            })
             .collect();
-        handles
-            .into_iter()
-            .flat_map(|h| h.join().unwrap_or_default())
-            .collect()
+        handles.into_iter().filter_map(|h| h.join().ok()).collect()
     });
-    findings.sort_by(|a, b| {
+    let mut out = RunOutput::default();
+    for (id, t, f) in results {
+        out.timings.push((id, t));
+        out.findings.extend(f);
+    }
+    out.findings.sort_by(|a, b| {
         b.size_bytes
             .cmp(&a.size_bytes)
             .then_with(|| a.id.cmp(&b.id))
     });
-    findings
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -575,6 +602,6 @@ mod tests {
         let dets = detectors_with(Arc::new(env));
         assert!(dets.len() >= 20);
         let ctx = testutil::ctx(t.path());
-        assert!(run(&dets, &ctx).is_empty());
+        assert!(run(&dets, &ctx).findings.is_empty());
     }
 }
