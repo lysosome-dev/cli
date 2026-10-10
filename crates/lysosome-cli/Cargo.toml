@@ -1,0 +1,20 @@
+[package]
+name = "lysosome"
+description = "Find and safely reclaim the disk your dev tools and coding agents leave behind"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+readme = "../../README.md"
+keywords = ["disk", "cleanup", "git", "worktree", "cli"]
+categories = ["command-line-utilities", "filesystem"]
+
+[[bin]]
+name = "lysosome"
+path = "src/main.rs"
+
+[dependencies]
+lysosome-core = { path = "../lysosome-core", version = "0.1.0" }

@@ -1,0 +1,12 @@
+[package]
+name = "lysosome-core"
+description = "Discovery, analysis, sizing and classification engine for lysosome"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
