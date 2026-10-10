@@ -54,10 +54,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
 use rayon::prelude::*;
@@ -68,7 +67,7 @@ use crate::error::{Error, Result};
 use crate::git::Git;
 use crate::model::{Category, Cleanup, Finding, Skipped, Status, Tier};
 use crate::progress::{NoProgress, Phase, Progress};
-use crate::size::{Sizer, Split};
+use crate::size::{attribute_links, Links, Sizer, Split};
 use crate::walk::{self, Descend, EntryKind, WalkOptions};
 use crate::worktree::analyze::{activity_secs, git_stamp_secs, idle};
 use crate::worktree::{self, discover, PhaseTiming, ScanOptions, WorktreeScan};
@@ -605,55 +604,90 @@ fn analyze_repos(
         .now
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |d| d.as_secs_f64());
-    let confirmed: Vec<RepoArtifacts> = git.pool().install(|| {
-        by_repo
-            .par_iter()
-            .filter_map(|(repo, cands)| {
-                let ignored = artifacts::ignored_subset(git, repo, cands);
-                let paths = outermost(ignored)
-                    .into_iter()
-                    .filter(|p| !contains_repo(repo_roots, p))
-                    .collect::<Vec<_>>();
-                if paths.is_empty() {
-                    return None;
-                }
-                let stamp = stamps.get(repo).copied().unwrap_or(0.0);
-                let mut activity = activity_secs(git, repo, stamp);
-                let mut status_failed = false;
-                // Only a dormant-looking repo needs the (costlier) dirty check.
-                if matches!(idle(activity, opts.now).0, Some(d) if d >= threshold) {
-                    match worktree_changes_secs(git, repo) {
-                        // Clamp: "too big to inspect" (f64::MAX) and future
-                        // mtimes mean "in use now".
-                        Some(changed) => activity = activity.max(changed.min(now_secs)),
-                        None => status_failed = true,
+    // Sizing doesn't wait for the slower activity checks: each repo's
+    // confirmed folders are handed to the sizing pool (the global rayon
+    // pool) the moment `git check-ignore` confirms them, while the git pool
+    // goes on with that repo's last-activity and dirty checks.
+    //
+    // Every folder is measured independently (and in parallel inside),
+    // keeping hard-linked files aside; shared inodes are then credited in
+    // path order (repos sorted, folders sorted within), so the folder
+    // credited with a shared hard link is deterministic and the same as a
+    // sequential pass would pick.
+    let measured: Mutex<HashMap<PathBuf, Measured>> = Mutex::new(HashMap::new());
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<PathBuf>>();
+    let confirmed: Vec<RepoArtifacts> = std::thread::scope(|scope| {
+        let measured = &measured;
+        scope.spawn(move || {
+            rayon::scope(|rs| {
+                for paths in rx {
+                    for p in paths {
+                        rs.spawn(move |_| {
+                            let m = measure_collecting(&p);
+                            reporter.tick();
+                            measured
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .insert(p, m);
+                        });
                     }
                 }
-                Some(RepoArtifacts {
-                    repo: repo.clone(),
-                    paths,
-                    activity_secs: activity,
-                    status_failed,
+            });
+        });
+        let tx = Mutex::new(tx);
+        git.pool().install(|| {
+            by_repo
+                .par_iter()
+                .filter_map(|(repo, cands)| {
+                    let ignored = artifacts::ignored_subset(git, repo, cands);
+                    let paths = outermost(ignored)
+                        .into_iter()
+                        .filter(|p| !contains_repo(repo_roots, p))
+                        .collect::<Vec<_>>();
+                    if paths.is_empty() {
+                        return None;
+                    }
+                    // A send only fails if the sizing thread is gone (it
+                    // panicked); the scope re-raises that panic.
+                    let _ = tx
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .send(paths.clone());
+                    let stamp = stamps.get(repo).copied().unwrap_or(0.0);
+                    let mut activity = activity_secs(git, repo, stamp);
+                    let mut status_failed = false;
+                    // Only a dormant-looking repo needs the (costlier) dirty check.
+                    if matches!(idle(activity, opts.now).0, Some(d) if d >= threshold) {
+                        match worktree_changes_secs(git, repo) {
+                            // Clamp: "too big to inspect" (f64::MAX) and future
+                            // mtimes mean "in use now".
+                            Some(changed) => activity = activity.max(changed.min(now_secs)),
+                            None => status_failed = true,
+                        }
+                    }
+                    Some(RepoArtifacts {
+                        repo: repo.clone(),
+                        paths,
+                        activity_secs: activity,
+                        status_failed,
+                    })
                 })
-            })
-            .collect()
+                .collect()
+        })
+        // `tx` drops here: the sizing thread drains the rest and finishes.
     });
-
-    // One de-duplication domain per filesystem across all projects.
-    let sizers: Mutex<HashMap<u64, Arc<Sizer>>> = Mutex::new(HashMap::new());
-    let sizer_for = |p: &Path| -> Option<Arc<Sizer>> {
-        let dev = fs::symlink_metadata(p).ok()?.dev();
-        let mut map = sizers.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(s) = map.get(&dev) {
-            return Some(s.clone());
-        }
-        let s = Arc::new(Sizer::new(p).ok()?);
-        map.insert(dev, s.clone());
-        Some(s)
-    };
-    let mut lost = 0u64;
-    // Sequential in path order (each folder is measured in parallel inside),
-    // so the project credited with a shared hard link is deterministic.
+    let mut measured = measured.into_inner().unwrap_or_else(|e| e.into_inner());
+    let measured: Vec<Measured> = confirmed
+        .iter()
+        .flat_map(|r| r.paths.iter())
+        .map(|p| measured.remove(p).unwrap_or_else(Measured::failed))
+        .collect();
+    let linked = attribute_links(measured.iter().map(|m| &m.links));
+    let lost: u64 = measured.iter().map(|m| m.errors).sum();
+    let mut sizes = measured
+        .iter()
+        .zip(linked)
+        .map(|(m, l)| (m.base + l, m.has_git));
     let projects: Vec<Project> = confirmed
         .iter()
         .map(|r| {
@@ -661,8 +695,7 @@ fn analyze_repos(
                 .paths
                 .iter()
                 .map(|p| {
-                    let (size, has_git) = sizer_for(p).map_or((0, false), |s| measure(&s, p));
-                    reporter.tick();
+                    let (size, has_git) = sizes.next().unwrap_or((0, false));
                     artifact(p.clone(), size, has_git)
                 })
                 .collect();
@@ -683,14 +716,43 @@ fn analyze_repos(
             }
         })
         .collect();
-    for s in sizers
-        .into_inner()
-        .unwrap_or_else(|e| e.into_inner())
-        .values()
-    {
-        lost += s.errors();
-    }
     (projects, lost)
+}
+
+/// One artifact folder measured on its own (see [`Sizer::collecting`]).
+struct Measured {
+    /// Bytes not shared through hard links.
+    base: u64,
+    has_git: bool,
+    /// Hard-linked inodes, credited later by [`attribute_links`].
+    links: Links,
+    errors: u64,
+}
+
+impl Measured {
+    fn failed() -> Measured {
+        Measured {
+            base: 0,
+            has_git: false,
+            links: Links::new(),
+            errors: 1,
+        }
+    }
+}
+
+fn measure_collecting(p: &Path) -> Measured {
+    match Sizer::collecting(p) {
+        Ok(s) => {
+            let (base, has_git) = measure(&s, p);
+            Measured {
+                base,
+                has_git,
+                links: s.take_links(),
+                errors: s.errors(),
+            }
+        }
+        Err(_) => Measured::failed(),
+    }
 }
 
 /// Allocated size of `dir`, and whether a `.git` folder exists anywhere inside.

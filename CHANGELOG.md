@@ -7,6 +7,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Faster artifact sizing (#26): main-repo artifact folders are measured in
+  parallel (hard-linked files are still credited to one folder,
+  deterministically, in path order) and start as soon as `git check-ignore`
+  confirms them instead of after every repository's git checks. On macOS a
+  directory's allocation and entry count come from its parent's
+  `getattrlistbulk` batch (no `fstat` per directory, empty ones never opened).
+
+### Fixed
+
+- `lysosome caches` counted a simulator disk image twice when two runtime
+  entries shared it; it is now listed once (`details.shared_with_runtime_ids`).
+
 ### Added
 
 - `lysosome clean -i` / `--interactive` (#16): pick what to clean in a
