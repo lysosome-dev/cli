@@ -55,16 +55,24 @@
       ]
     },
     "cleanup": {
-      "description": "argv of the command that removes the item. Never present for items that are not safe to remove.",
+      "description": "How to remove the item. action \"command\" (the default when absent): run `command`, an argv vector — the tool's own cleanup command. action \"trash\": move every entry of `paths` to the Trash. Never present for items that are not safe to remove.",
       "type": "object",
-      "required": ["command"],
       "properties": {
+        "action": { "enum": ["command", "trash"] },
         "command": {
           "type": "array",
           "minItems": 1,
           "items": { "type": "string" }
+        },
+        "paths": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/path" }
         }
-      }
+      },
+      "if": { "required": ["action"], "properties": { "action": { "const": "trash" } } },
+      "then": { "required": ["paths"] },
+      "else": { "required": ["command"] }
     },
     "summary": {
       "type": "object",
@@ -151,11 +159,46 @@
           }
         },
         {
+          "description": "System findings (caches, AI models, containers, Xcode, Android, editors) are named.",
+          "if": {
+            "properties": {
+              "category": { "enum": ["ai_models", "xcode", "package_caches", "containers", "editors", "android"] }
+            }
+          },
+          "then": { "properties": { "details": { "$ref": "#/$defs/system_details" } } }
+        },
+        {
           "description": "Only REMOVABLE findings carry a cleanup command.",
           "if": { "properties": { "status": { "not": { "const": "REMOVABLE" } } } },
           "then": { "properties": { "cleanup": { "type": "null" } } }
         }
       ]
+    },
+    "system_details": {
+      "description": "Details shared by every system finding. Kind-specific keys (model, image_id, runtime_id, package, ...) may be added.",
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "description": "Human name to show instead of the path: a model name (llama3.1:8b, meta-llama/Llama-3-8B), an image (web:1.0), an OS version (iOS 17.5 (21F79)), a cache (npm cache).",
+          "type": "string",
+          "minLength": 1
+        },
+        "redownload_bytes": {
+          "description": "regenerable_expensive only: bytes to download to get it back (Ollama models include layers shared with other models).",
+          "$ref": "#/$defs/bytes"
+        },
+        "total_bytes": { "$ref": "#/$defs/bytes" },
+        "shared_bytes": {
+          "description": "Bytes shared with other items and therefore not part of size_bytes.",
+          "$ref": "#/$defs/bytes"
+        },
+        "unreadable_entries": {
+          "description": "Entries that could not be read while sizing (size_bytes may be low).",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
     },
     "worktree_details": {
       "type": "object",

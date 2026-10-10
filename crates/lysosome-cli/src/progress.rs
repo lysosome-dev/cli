@@ -20,6 +20,11 @@ impl Spinner {
         Spinner { pb, walking }
     }
 
+    /// Replace the spinner's message (for scans without phases).
+    pub fn set_message(&self, msg: impl Into<String>) {
+        self.pb.set_message(msg.into());
+    }
+
     pub fn clear(&self) {
         self.pb.finish_and_clear();
     }

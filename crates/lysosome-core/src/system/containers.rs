@@ -1,0 +1,349 @@
+//! Docker (via `docker system df -v`, only if the daemon already answers) and
+//! the OrbStack data folder. Never starts Docker.
+
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use serde_json::Value;
+
+use super::{finish, parse_human_bytes, parse_timestamp, real_dir, Item, SystemEnv};
+use crate::detector::ScanContext;
+use crate::model::{Category, Finding, Tier};
+
+const CAT: Category = Category::Containers;
+
+pub(super) const TABLE: [(&str, Category, super::ScanFn); 2] =
+    [("docker", CAT, docker), ("orbstack", CAT, orbstack)];
+
+/// `docker system df -v` computes sizes and can take a while.
+const DF_TIMEOUT: Duration = Duration::from_secs(45);
+
+fn docker(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
+    let tools = env.tools(&ctx.home);
+    // Probe first: if the daemon isn't running this fails fast (the CLI never
+    // starts Docker Desktop).
+    if tools
+        .output_with_timeout(
+            "docker",
+            ["version", "--format", "{{.Server.Version}}"],
+            env.probe_timeout,
+        )
+        .is_none_or(|v| v.is_empty())
+    {
+        return Vec::new();
+    }
+    let Some(out) = tools.output_with_timeout(
+        "docker",
+        ["system", "df", "-v", "--format", "json"],
+        DF_TIMEOUT,
+    ) else {
+        return Vec::new();
+    };
+    match serde_json::from_str::<Value>(&out) {
+        Ok(v) => finish(docker_items(&v)),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn s<'a>(v: &'a Value, key: &str) -> &'a str {
+    v[key].as_str().unwrap_or("")
+}
+
+fn bytes(v: &Value, key: &str) -> u64 {
+    match &v[key] {
+        Value::Number(n) => n.as_u64().unwrap_or(0),
+        Value::String(x) => parse_human_bytes(x).unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn count(v: &Value, key: &str) -> u64 {
+    match &v[key] {
+        Value::Number(n) => n.as_u64().unwrap_or(0),
+        Value::String(x) => x.trim().parse().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn truthy(v: &Value, key: &str) -> bool {
+    match &v[key] {
+        Value::Bool(b) => *b,
+        Value::String(x) => x == "true",
+        _ => false,
+    }
+}
+
+/// Docker objects have no folder of their own; findings use a
+/// `docker://<type>/<id>` pseudo-path and always clean up through `docker`.
+fn pseudo(kind: &str, id: &str) -> PathBuf {
+    PathBuf::from(format!("docker://{kind}/{id}"))
+}
+
+/// Turn `docker system df -v --format json` into items.
+pub(super) fn docker_items(v: &Value) -> Vec<Item> {
+    let mut items = Vec::new();
+    // `docker system df -v` lists an image once per tag; group rows by ID so
+    // a multi-tagged image is one finding counted once.
+    let mut images: Vec<(&str, Vec<&Value>)> = Vec::new();
+    for img in v["Images"].as_array().into_iter().flatten() {
+        let id = s(img, "ID");
+        if id.is_empty() {
+            continue;
+        }
+        match images.iter_mut().find(|(i, _)| *i == id) {
+            Some((_, rows)) => rows.push(img),
+            None => images.push((id, vec![img])),
+        }
+    }
+    for (id, rows) in images {
+        let img = rows[0];
+        let tags: Vec<String> = rows
+            .iter()
+            .filter_map(|r| {
+                let (repo, tag) = (s(r, "Repository"), s(r, "Tag"));
+                if repo.is_empty() || repo == "<none>" {
+                    None
+                } else if tag.is_empty() || tag == "<none>" {
+                    Some(repo.to_string())
+                } else {
+                    Some(format!("{repo}:{tag}"))
+                }
+            })
+            .collect();
+        let short = id.trim_start_matches("sha256:");
+        let short = &short[..short.len().min(12)];
+        let dangling = tags.is_empty();
+        let name = if dangling {
+            format!("<untagged> {short}")
+        } else {
+            tags.join(", ")
+        };
+        let total = bytes(img, "Size");
+        let unique = if img.get("UniqueSize").is_some() {
+            bytes(img, "UniqueSize")
+        } else {
+            total
+        };
+        let containers = rows
+            .iter()
+            .map(|r| count(r, "Containers"))
+            .max()
+            .unwrap_or(0);
+        // Docker doesn't report when an image was last used; CreatedAt is the
+        // build time, so it goes in details rather than last_activity.
+        let created = parse_timestamp(s(img, "CreatedAt"))
+            .map(|t| humantime::format_rfc3339_seconds(t).to_string());
+        let mut item = Item::new(
+            "docker-image",
+            CAT,
+            pseudo("image", id),
+            name,
+            Tier::RegenerableExpensive,
+        )
+        .size(unique)
+        .detail("image_id", id)
+        .detail("tags", tags.clone())
+        .detail("created_at", created)
+        .detail("total_bytes", total)
+        .detail("shared_bytes", bytes(img, "SharedSize"))
+        .detail("containers", containers)
+        .detail("dangling", dangling);
+        item.redownload_bytes = Some(total);
+        if containers > 0 {
+            item.tier = Tier::Review;
+            item = item.reason(format!(
+                "used by {containers} container{}",
+                if containers == 1 { "" } else { "s" }
+            ));
+        } else {
+            // Removing by ID fails for an image tagged in several
+            // repositories; removing every tag removes the image.
+            let mut argv = vec!["docker".to_string(), "image".into(), "rm".into()];
+            if dangling {
+                argv.push(id.to_string());
+            } else {
+                argv.extend(tags);
+            }
+            item = item.command(argv).reason(if dangling {
+                "untagged image, not used by any container"
+            } else {
+                "not used by any container; pulled or rebuilt on next use"
+            });
+        }
+        items.push(item);
+    }
+
+    // Build cache: what `docker builder prune` can free = entries neither in
+    // use nor shared with images.
+    let cache: Vec<&Value> = v["BuildCache"].as_array().into_iter().flatten().collect();
+    if !cache.is_empty() {
+        let reclaimable: u64 = cache
+            .iter()
+            .filter(|c| !truthy(c, "InUse") && !truthy(c, "Shared"))
+            .map(|c| bytes(c, "Size"))
+            .sum();
+        let total: u64 = cache.iter().map(|c| bytes(c, "Size")).sum();
+        let last = cache
+            .iter()
+            .filter_map(|c| parse_timestamp(s(c, "LastUsedAt")))
+            .max();
+        items.push(
+            Item::new(
+                "docker-build-cache",
+                CAT,
+                pseudo("build-cache", "all"),
+                "Docker build cache",
+                Tier::Regenerable,
+            )
+            .command(["docker", "builder", "prune", "--force"])
+            .reason("rebuilt by the next `docker build`")
+            .size(reclaimable)
+            .last_activity(last)
+            .detail("entries", cache.len() as u64)
+            .detail("total_bytes", total),
+        );
+    }
+
+    for vol in v["Volumes"].as_array().into_iter().flatten() {
+        let name = s(vol, "Name");
+        if name.is_empty() {
+            continue;
+        }
+        let links = count(vol, "Links");
+        items.push(
+            Item::new(
+                "docker-volume",
+                CAT,
+                pseudo("volume", name),
+                name,
+                Tier::Review,
+            )
+            .reason(if links > 0 {
+                format!("volume data used by {links} container(s); may hold databases or state")
+            } else {
+                "volume data (databases, state) can't be rebuilt automatically".to_string()
+            })
+            .size(bytes(vol, "Size"))
+            .detail("links", links)
+            .detail("mountpoint", s(vol, "Mountpoint")),
+        );
+    }
+    items
+}
+
+/// OrbStack keeps images, volumes and Linux machines in one data folder.
+fn orbstack(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
+    // When OrbStack *is* the Docker engine, its images and volumes are already
+    // listed by the docker detector; reporting the whole data folder too would
+    // count them twice.
+    let context =
+        env.tools(&ctx.home)
+            .output_with_timeout("docker", ["context", "show"], env.probe_timeout);
+    if context.as_deref() == Some("orbstack") {
+        return Vec::new();
+    }
+    orbstack_items(&ctx.home)
+}
+
+fn orbstack_items(home: &Path) -> Vec<Finding> {
+    let candidates = [
+        home.join("Library/Group Containers/HUAQ24HBR6.dev.orbstack/data"),
+        home.join(".orbstack/data"),
+    ];
+    let Some(dir) = candidates.into_iter().find_map(real_dir) else {
+        return Vec::new();
+    };
+    finish(vec![Item::new(
+        "orbstack-data",
+        CAT,
+        dir,
+        "OrbStack data (containers, images, volumes, machines)",
+        Tier::Review,
+    )
+    .reason(
+        "OrbStack's VM disk (containers, images, volumes, machines); manage it from OrbStack",
+    )])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Status;
+    use crate::system::testutil;
+    use serde_json::json;
+
+    #[test]
+    fn maps_docker_df_to_findings() {
+        let v = json!({
+          "Images": [
+            {"Containers":"0","CreatedAt":"2026-04-28 21:21:29 -0400 EDT","ID":"sha256:aaaabbbbccccdddd","Repository":"web","Tag":"1.0","SharedSize":"100MB","Size":"1.2GB","UniqueSize":"1.1GB"},
+            {"Containers":"2","CreatedAt":"2026-04-28 21:21:29 -0400 EDT","ID":"sha256:eeee","Repository":"db","Tag":"latest","SharedSize":"0B","Size":"300MB","UniqueSize":"300MB"},
+            {"Containers":"0","CreatedAt":"2026-04-28 21:21:29 -0400 EDT","ID":"sha256:ffff0000","Repository":"<none>","Tag":"<none>","SharedSize":"0B","Size":"5MB","UniqueSize":"5MB"}
+          ],
+          "Containers": [],
+          "Volumes": [{"Name":"pgdata","Links":"1","Size":"2GB","Mountpoint":"/var/lib/docker/volumes/pgdata/_data"}],
+          "BuildCache": [
+            {"ID":"a","InUse":"false","Shared":"false","Size":"40MB","LastUsedAt":"2026-04-04 00:19:24.8 +0000 UTC"},
+            {"ID":"b","InUse":"false","Shared":"true","Size":"500MB","LastUsedAt":"2026-04-05 00:00:00 +0000 UTC"}
+          ]
+        });
+        let f = finish(docker_items(&v));
+        let web = f.iter().find(|x| x.details["name"] == "web:1.0").unwrap();
+        assert_eq!(web.size_bytes, 1_100_000_000);
+        assert_eq!(web.details["redownload_bytes"], 1_200_000_000u64);
+        assert_eq!(web.status, Status::Removable);
+        assert_eq!(
+            web.cleanup.as_ref().unwrap().command,
+            ["docker", "image", "rm", "web:1.0"]
+        );
+        let db = f.iter().find(|x| x.details["name"] == "db:latest").unwrap();
+        assert_eq!(db.status, Status::Review);
+        assert!(db.cleanup.is_none());
+        let untagged = f
+            .iter()
+            .find(|x| x.details["name"] == "<untagged> ffff0000")
+            .unwrap();
+        assert_eq!(
+            untagged.cleanup.as_ref().unwrap().command,
+            ["docker", "image", "rm", "sha256:ffff0000"]
+        );
+        assert!(web.last_activity.is_none(), "build time is not last use");
+        let bc = testutil::by_kind(&f, "docker-build-cache");
+        assert_eq!(bc[0].size_bytes, 40_000_000);
+        assert_eq!(
+            bc[0].cleanup.as_ref().unwrap().command,
+            ["docker", "builder", "prune", "--force"]
+        );
+        assert_eq!(bc[0].tier, Tier::Regenerable);
+        let vol = testutil::by_kind(&f, "docker-volume");
+        assert_eq!(vol[0].status, Status::Review);
+        assert_eq!(vol[0].tier, Tier::Review);
+    }
+
+    #[test]
+    fn multi_tagged_images_are_one_finding() {
+        let row = |tag: &str| json!({"Containers":"0","ID":"sha256:abc","Repository":"node","Tag":tag,"Size":"1GB","UniqueSize":"1GB","SharedSize":"0B"});
+        let v = json!({"Images": [row("20"), row("latest")]});
+        let f = finish(docker_items(&v));
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].size_bytes, 1_000_000_000);
+        assert_eq!(f[0].details["name"], "node:20, node:latest");
+        assert_eq!(
+            f[0].cleanup.as_ref().unwrap().command,
+            ["docker", "image", "rm", "node:20", "node:latest"]
+        );
+    }
+
+    #[test]
+    fn finds_orbstack_data_as_review() {
+        let t = tempfile::tempdir().unwrap();
+        testutil::write(
+            &t.path()
+                .join("Library/Group Containers/HUAQ24HBR6.dev.orbstack/data/data.img"),
+            10_000,
+        );
+        let f = orbstack_items(t.path());
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].status, Status::Review);
+    }
+}

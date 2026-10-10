@@ -88,11 +88,53 @@ impl Status {
     }
 }
 
-/// The command a user (or Milestone 4 `clean`) would run to remove a finding,
-/// as an argv vector (no shell quoting needed).
+/// How a finding gets removed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanupAction {
+    /// Run the tool's own cleanup command ([`Cleanup::command`]).
+    #[default]
+    Command,
+    /// Move [`Cleanup::paths`] to the Trash (Milestone 4 uses the `trash` crate).
+    Trash,
+}
+
+/// How a user (or Milestone 4 `clean`) would remove a finding.
+///
+/// * `action: "command"` — run `command`, an argv vector (no shell quoting needed).
+/// * `action: "trash"` — move every entry of `paths` to the Trash.
+///
+/// Build with [`Cleanup::command`] / [`Cleanup::trash`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cleanup {
+    #[serde(default)]
+    pub action: CleanupAction,
+    /// argv for [`CleanupAction::Command`]; empty (and omitted from JSON) otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub command: Vec<String>,
+    /// Paths for [`CleanupAction::Trash`]; empty (and omitted from JSON) otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", with = "lossy_paths")]
+    pub paths: Vec<PathBuf>,
+}
+
+impl Cleanup {
+    /// Run the tool's own cleanup command (`argv[0]` is the program).
+    pub fn command(argv: Vec<String>) -> Self {
+        Cleanup {
+            action: CleanupAction::Command,
+            command: argv,
+            paths: Vec::new(),
+        }
+    }
+
+    /// Move `paths` to the Trash.
+    pub fn trash(paths: Vec<PathBuf>) -> Self {
+        Cleanup {
+            action: CleanupAction::Trash,
+            command: Vec::new(),
+            paths,
+        }
+    }
 }
 
 /// One thing on disk that lysosome found.

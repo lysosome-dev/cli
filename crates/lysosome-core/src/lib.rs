@@ -4,6 +4,7 @@
 //! * [`walk`] — parallel, symlink-safe directory discovery with a visitor.
 //! * [`git`] — bounded, timeout-guarded, lock-free `git` subprocesses.
 //! * [`size`] — allocated-size measurement with hard-link de-duplication.
+//! * [`system`] — Milestone 3: caches, AI models, Docker, Xcode, Android, editors.
 //! * [`artifacts`] — artifact folder names and the `git check-ignore` gate.
 //! * [`worktree`] — Milestone 1: worktree discovery, analysis, classification.
 //! * [`detector`] — the [`detector::Detector`] trait future scanners implement.
@@ -18,6 +19,7 @@ pub mod git;
 pub mod model;
 pub mod progress;
 pub mod size;
+pub mod system;
 pub mod walk;
 pub mod worktree;
 

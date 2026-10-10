@@ -10,7 +10,7 @@ Claude Code, Cursor and parallel agents create git worktrees constantly, and not
 
 `lysosome` shows you where the disk went, labels every item by how safe it is to delete, and (soon) cleans it up safely.
 
-> 🚧 Under active development. Milestone 1 (worktree scanner) is here; artifacts, caches, AI models and safe cleanup are next. See [docs/SPEC.md](docs/SPEC.md).
+> 🚧 Under active development. The worktree scanner and the cache / AI model / Docker / Xcode scanner are here; project artifacts and safe cleanup are next. See [docs/SPEC.md](docs/SPEC.md).
 
 <p align="center"><img src="docs/assets/worktrees.svg" alt="lysosome worktrees: dormant worktrees grouped by how safe they are to remove" width="860"></p>
 
@@ -115,6 +115,27 @@ Squash-merged branches show as `REVIEW` (git can't tell that a squash merge land
 | `--json` | | Print the versioned JSON report instead of a table |
 | `--profile` | | Print walk / git / size timings to stderr |
 | `--no-color` | | Disable color (`NO_COLOR` is honored too; color is off when piped) |
+
+## What it finds: caches, AI models, Docker, Xcode
+
+```bash
+lysosome caches                          # everything below, grouped by category
+lysosome caches --category ai_models     # just local AI models (repeatable)
+lysosome caches --json                   # same versioned JSON contract
+```
+
+`lysosome caches` (alias `system`) checks the places dev tools hide gigabytes. It asks each tool where its data lives when it can (`brew --cache`, `go env GOMODCACHE`, `pnpm store path`, `docker system df`, `xcrun simctl`), with short timeouts, and skips anything that isn't installed. Docker is only queried if it's already running; nothing is ever started or changed.
+
+| Category | What | Tier |
+|---|---|---|
+| AI models | Ollama models by name (`llama3.1:8b`; shared layers counted once), Hugging Face hub repos (`meta-llama/Llama-3-8B`, honors `HF_HOME`), LM Studio models, `~/.cache/torch`, whisper models | costly |
+| Containers | Docker images (unused → removable, in use → review), build cache, volumes (review); OrbStack data (review) | costly / cache / review |
+| Xcode (macOS) | DerivedData, `iOS DeviceSupport` per version, simulator runtimes and unavailable simulators, Archives (review: dSYMs) | cache / costly / review |
+| Package caches | npm, pnpm, Yarn, Bun, pip, uv, conda, Cargo, Go module + build cache, Gradle, Maven, Homebrew, CocoaPods | cache |
+| Android | emulators (AVDs), SDK system images | costly |
+| Editors | VS Code and Cursor caches, JetBrains caches | cache |
+
+Tiers: **cache** (`regenerable`) is refilled on demand; **costly** (`regenerable_expensive`) can be re-downloaded but it takes time and bandwidth, and the JSON includes `details.redownload_bytes`; **review** may hold something you can't rebuild. Every finding names the tool's own cleanup command where one exists (`npm cache clean --force`, `brew cleanup -s`, `go clean -modcache`, `docker builder prune --force`, `xcrun simctl delete unavailable`, `ollama rm <model>`), otherwise the folder to move to the Trash.
 
 ## JSON output
 
