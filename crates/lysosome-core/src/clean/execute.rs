@@ -5,6 +5,7 @@ use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
@@ -83,36 +84,23 @@ impl Trasher for DirTrash {
     }
 }
 
-/// Delete `path` for good. Symlinks are never followed: a symlink target is
-/// refused, and `remove_dir_all` removes links inside the folder, not what
-/// they point at.
+/// Delete `path` for good. Never follows symlinks (a symlink target is
+/// refused; links inside a folder are unlinked, not followed) and never
+/// touches another filesystem: the target must not be a mount point and
+/// nothing may be mounted inside it. Folders are removed with std's
+/// `remove_dir_all`, which walks with `openat`/`O_NOFOLLOW`, so a folder
+/// swapped for a symlink mid-delete is not followed.
 pub fn delete_permanently(path: &Path) -> Result<(), String> {
     let m = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     if m.file_type().is_symlink() {
         return Err("refusing to delete a symlink target".into());
     }
-    use std::os::unix::fs::MetadataExt;
-    remove_tree(path, m.dev()).map_err(|e| format!("could not delete: {e}"))
-}
-
-/// Like `remove_dir_all`, but never follows symlinks (they are unlinked) and
-/// never crosses into another filesystem mounted inside.
-fn remove_tree(path: &Path, dev: u64) -> std::io::Result<()> {
-    use std::os::unix::fs::MetadataExt;
-    let m = fs::symlink_metadata(path)?;
-    if !m.is_dir() {
-        return fs::remove_file(path);
+    if m.is_dir() {
+        recheck::inspect_tree(path, false)?;
+        fs::remove_dir_all(path).map_err(|e| format!("could not delete: {e}"))
+    } else {
+        fs::remove_file(path).map_err(|e| format!("could not delete: {e}"))
     }
-    if m.dev() != dev {
-        return Err(std::io::Error::other(format!(
-            "{} is another filesystem; not crossing into it",
-            path.display()
-        )));
-    }
-    for e in fs::read_dir(path)? {
-        remove_tree(&e?.path(), dev)?;
-    }
-    fs::remove_dir(path)
 }
 
 /// What happened to one item.
@@ -182,9 +170,13 @@ pub struct Executor<'a> {
     pub path_env: Option<OsString>,
     /// Extra environment for git processes (tests isolate config).
     pub git_env: Vec<(OsString, OsString)>,
-    /// Every outcome is appended here. If writing fails, the remaining items
-    /// are skipped.
+    /// An `attempt` entry is appended before acting on each item and its
+    /// outcome after. If a write fails, that item and every remaining one are
+    /// reported `failed` (the remaining ones are not attempted).
     pub log: Option<&'a ActionLog>,
+    /// Set (e.g. by a Ctrl-C handler) to stop after the current item; the
+    /// remaining items are reported `skipped: not attempted: interrupted`.
+    pub stop: Option<&'a AtomicBool>,
 }
 
 impl<'a> Executor<'a> {
@@ -198,6 +190,7 @@ impl<'a> Executor<'a> {
             path_env: std::env::var_os("PATH"),
             git_env: Vec::new(),
             log,
+            stop: None,
         }
     }
 
@@ -221,11 +214,20 @@ impl<'a> Executor<'a> {
         let mut results = Vec::with_capacity(plan.items.len());
         let mut log_broken: Option<String> = None;
         for (i, item) in plan.items.iter().enumerate() {
+            let interrupted = self.stop.is_some_and(|s| s.load(Ordering::SeqCst));
+            let started = match (&log_broken, self.log) {
+                (None, Some(log)) if !interrupted => log.record_attempt(item).err(),
+                _ => None,
+            };
+            if let Some(e) = started {
+                log_broken = Some(e.to_string());
+            }
             let r = match &log_broken {
                 Some(e) => ItemResult::fail(
                     None,
                     format!("not attempted: the action log could not be written ({e})"),
                 ),
+                None if interrupted => ItemResult::skip("not attempted: interrupted"),
                 None => {
                     let ctx = Ctx {
                         git: git.as_ref(),
@@ -306,6 +308,8 @@ impl<'a> Executor<'a> {
                 }
                 recheck::real_target(path, true, None)
                     .map_err(|e| format!("changed since scan: {e}"))?;
+                recheck::no_repo_between(worktree, path)
+                    .map_err(|e| format!("changed since scan: {e}"))?;
                 recheck::still_ignored(ctx, worktree, path)
                     .map_err(|e| format!("changed since scan: {e}"))?;
                 let size = self.checked_size(path)?;
@@ -322,6 +326,8 @@ impl<'a> Executor<'a> {
                     );
                 }
                 recheck::real_target(path, true, None)
+                    .map_err(|e| format!("changed since scan: {e}"))?;
+                recheck::no_repo_between(project, path)
                     .map_err(|e| format!("changed since scan: {e}"))?;
                 recheck::still_ignored(ctx, project, path)
                     .map_err(|e| format!("changed since scan: {e}"))?;
@@ -346,7 +352,7 @@ impl<'a> Executor<'a> {
                     };
                     match recheck::real_target(p, false, Some(parent)) {
                         Ok(()) => {}
-                        Err(e) if e == "no longer exists" => continue,
+                        Err(e) if e == recheck::GONE => continue,
                         Err(e) => return Err(format!("changed since scan: {e}")),
                     }
                     let size = if fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()) {
@@ -476,21 +482,55 @@ impl<'a> Executor<'a> {
         permanent: bool,
     ) -> Result<ItemResult, String> {
         let dest = Some("git worktree remove".to_string());
+        // Pre-flight, before anything moves: git would delete everything in
+        // the folder, so nothing in it may be a nested checkout (submodule,
+        // clone inside an ignored folder), unreadable, or a mount.
+        let total =
+            recheck::inspect_worktree(path).map_err(|e| format!("kept the worktree: {e}"))?;
         // `git worktree remove` deletes ignored files outright. Move the ones
         // that aren't build output to the Trash first (unless --permanent).
-        let mut rescued = Vec::new();
+        let mut rescued: Vec<PathBuf> = Vec::new();
+        let mut rescued_bytes = 0u64;
+        let rescued_note = |r: &[PathBuf]| -> String {
+            if r.is_empty() {
+                return String::new();
+            }
+            let names: Vec<String> = r
+                .iter()
+                .take(5)
+                .map(|p| p.strip_prefix(path).unwrap_or(p).display().to_string())
+                .collect();
+            format!(
+                "; {} ignored {} already moved to the Trash ({}{})",
+                r.len(),
+                if r.len() == 1 {
+                    "entry was"
+                } else {
+                    "entries were"
+                },
+                names.join(", "),
+                if r.len() > 5 { ", …" } else { "" }
+            )
+        };
         if !permanent {
             for p in self.precious_ignored(ctx, path)? {
+                let size = match fs::symlink_metadata(&p) {
+                    Ok(m) if m.is_dir() => recheck::inspect_tree(&p, false).unwrap_or(0),
+                    Ok(_) => crate::size::allocated_size(&p),
+                    Err(_) => 0,
+                };
                 match self.trasher.trash(&p) {
-                    Ok(_) => rescued.push(p),
+                    Ok(_) => {
+                        rescued.push(p);
+                        rescued_bytes += size;
+                    }
                     Err(e) => {
-                        return Ok(ItemResult::fail(
-                            dest,
-                            format!(
-                            "kept the worktree: could not move ignored {} to the Trash first: {e}",
-                            p.display()
-                        ),
-                        ))
+                        let msg = format!(
+                            "kept the worktree: could not move ignored {} to the Trash first: {e}{}",
+                            p.display(),
+                            rescued_note(&rescued)
+                        );
+                        return Ok(ItemResult::fail(dest, msg));
                     }
                 }
             }
@@ -528,7 +568,12 @@ impl<'a> Executor<'a> {
         });
         let out = match out {
             Ok(o) => o,
-            Err(e) => return Ok(ItemResult::fail(dest, format!("could not run git: {e}"))),
+            Err(e) => {
+                return Ok(ItemResult::fail(
+                    dest,
+                    format!("could not run git: {e}{}", rescued_note(&rescued)),
+                ))
+            }
         };
         if !out.success {
             let why = if out.timed_out {
@@ -538,7 +583,10 @@ impl<'a> Executor<'a> {
             };
             return Ok(ItemResult::fail(
                 dest,
-                format!("git worktree remove failed: {why}"),
+                format!(
+                    "git worktree remove failed: {why}{}",
+                    rescued_note(&rescued)
+                ),
             ));
         }
         if fs::symlink_metadata(path).is_ok() {
@@ -561,26 +609,19 @@ impl<'a> Executor<'a> {
             "removed with `git worktree remove` (prune failed); the branch is kept".to_string()
         };
         if !rescued.is_empty() {
-            let names: Vec<String> = rescued
-                .iter()
-                .take(3)
-                .map(|p| p.strip_prefix(path).unwrap_or(p).display().to_string())
-                .collect();
             write!(
                 msg,
-                "; {} ignored {} moved to the Trash first ({}{})",
-                rescued.len(),
-                if rescued.len() == 1 {
-                    "entry"
-                } else {
-                    "entries"
-                },
-                names.join(", "),
-                if rescued.len() > 3 { ", …" } else { "" }
+                "{}",
+                rescued_note(&rescued).replace("already moved", "moved")
             )
             .ok();
         }
-        Ok(ItemResult::done(size, "git worktree remove", msg))
+        let _ = size; // the scan's estimate; report what was measured now
+        Ok(ItemResult::done(
+            total.saturating_sub(rescued_bytes),
+            "git worktree remove",
+            msg,
+        ))
     }
 
     fn run_command(

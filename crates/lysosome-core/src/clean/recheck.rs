@@ -82,9 +82,44 @@ fn lexically_protected(path: &Path, home: &Path) -> Result<(), String> {
 /// linked worktree or submodule may hold local work), a folder that can't be
 /// read, and another filesystem mounted inside.
 pub(crate) fn inspect_tree(dir: &Path, refuse_git: bool) -> Result<u64, String> {
+    walk_checked(
+        dir,
+        if refuse_git {
+            GitPolicy::Refuse
+        } else {
+            GitPolicy::Allow
+        },
+    )
+}
+
+/// Like [`inspect_tree`] for a whole linked worktree: its own top-level
+/// `.git` file is expected; any other `.git` (a submodule, a clone inside an
+/// ignored folder) is refused, since `git worktree remove` would delete it.
+pub(crate) fn inspect_worktree(dir: &Path) -> Result<u64, String> {
+    walk_checked(dir, GitPolicy::RefuseBelowRoot)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GitPolicy {
+    Allow,
+    Refuse,
+    RefuseBelowRoot,
+}
+
+fn walk_checked(dir: &Path, git: GitPolicy) -> Result<u64, String> {
     use std::os::unix::fs::MetadataExt;
     let root = fs::symlink_metadata(dir).map_err(|e| format!("cannot inspect it: {e}"))?;
     let dev = root.dev();
+    // The target itself must not be a mount point (its whole filesystem
+    // would go).
+    if let Some(parent) = dir.parent() {
+        let pdev = fs::symlink_metadata(parent)
+            .map_err(|e| format!("cannot inspect its folder: {e}"))?
+            .dev();
+        if pdev != dev {
+            return Err("it is a separate mounted filesystem".into());
+        }
+    }
     let mut bytes = root.blocks() * 512;
     let mut seen = std::collections::HashSet::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -94,7 +129,12 @@ pub(crate) fn inspect_tree(dir: &Path, refuse_git: bool) -> Result<u64, String> 
         for e in rd {
             let e = e.map_err(|e| format!("part of it can't be read ({}: {e})", d.display()))?;
             let p = e.path();
-            if refuse_git && e.file_name() == ".git" {
+            let refuse = match git {
+                GitPolicy::Allow => false,
+                GitPolicy::Refuse => true,
+                GitPolicy::RefuseBelowRoot => d != dir,
+            };
+            if refuse && e.file_name() == ".git" {
                 return Err(format!(
                     "it contains a git checkout ({} inside)",
                     p.strip_prefix(dir).unwrap_or(&p).display()
@@ -113,11 +153,35 @@ pub(crate) fn inspect_tree(dir: &Path, refuse_git: bool) -> Result<u64, String> 
                         p.display()
                     ));
                 }
+                // The worktree's own `.git` (a file) is never walked; a `.git`
+                // folder at its root would be odd but is just git data.
                 stack.push(p);
             }
         }
     }
     Ok(bytes)
+}
+
+/// [`real_target`]'s reason when the path is simply gone (callers compare
+/// against this constant, never a reworded literal).
+pub(crate) const GONE: &str = "no longer exists";
+
+/// No other repository may sit between `root` (a project or worktree) and
+/// `path`: an artifact inside a nested repo belongs to that repo, whose
+/// idleness and ignore rules were never checked.
+pub(crate) fn no_repo_between(root: &Path, path: &Path) -> Result<(), String> {
+    for a in path.ancestors().skip(1) {
+        if a == root || !a.starts_with(root) {
+            break;
+        }
+        if fs::symlink_metadata(a.join(".git")).is_ok() {
+            return Err(format!(
+                "it now belongs to a nested repository ({})",
+                a.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// `path` must exist and not be a symlink; if `dir`, it must be a folder.
@@ -130,7 +194,7 @@ pub(crate) fn real_target(
 ) -> Result<(), String> {
     let m = match fs::symlink_metadata(path) {
         Ok(m) => m,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err("no longer exists".into()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(GONE.into()),
         Err(e) => return Err(format!("cannot inspect it: {e}")),
     };
     if m.file_type().is_symlink() {
@@ -267,6 +331,31 @@ mod tests {
         std::os::unix::fs::symlink(&base, home.join("up")).unwrap();
         assert!(protected(&home.join("up/home"), &home).is_err());
         assert!(protected(&home.join("real/cache"), &home).is_ok());
+    }
+
+    #[test]
+    fn nested_repos_between_project_and_target_are_refused() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("mono");
+        let nm = root.join("tools/cli/node_modules");
+        fs::create_dir_all(&nm).unwrap();
+        assert!(no_repo_between(&root, &nm).is_ok());
+        fs::write(root.join(".git"), "gitdir: x\n").unwrap(); // the root's own is fine
+        assert!(no_repo_between(&root, &nm).is_ok());
+        fs::create_dir_all(root.join("tools/cli/.git")).unwrap();
+        let e = no_repo_between(&root, &nm).unwrap_err();
+        assert!(e.contains("nested repository"), "{e}");
+    }
+
+    #[test]
+    fn worktree_inspection_allows_only_its_own_git_file() {
+        let t = tempfile::tempdir().unwrap();
+        let wt = t.path().join("wt");
+        fs::create_dir_all(wt.join("node_modules/x")).unwrap();
+        fs::write(wt.join(".git"), "gitdir: /r/.git/worktrees/wt\n").unwrap();
+        assert!(inspect_worktree(&wt).is_ok());
+        fs::write(wt.join("node_modules/x/.git"), "gitdir: y\n").unwrap();
+        assert!(inspect_worktree(&wt).unwrap_err().contains("git checkout"));
     }
 
     #[test]

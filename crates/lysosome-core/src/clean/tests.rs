@@ -387,9 +387,17 @@ fn trash_items_move_to_the_trasher_and_are_logged() {
     let lines: Vec<serde_json::Value> = std::fs::read_to_string(&log_path)
         .unwrap()
         .lines()
-        .map(|l| serde_json::from_str(l).unwrap())
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
         .collect();
-    assert_eq!(lines.len(), 2);
+    assert_eq!(
+        lines.len(),
+        4,
+        "an attempt line and an outcome line per item"
+    );
+    assert_eq!(
+        lines.iter().filter(|l| l["outcome"] == "attempt").count(),
+        2
+    );
     let done = lines.iter().find(|l| l["outcome"] == "done").unwrap();
     assert_eq!(done["action"], "trash");
     assert_eq!(done["target"], dd.to_string_lossy().as_ref());

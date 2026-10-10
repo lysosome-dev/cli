@@ -58,7 +58,25 @@ impl ActionLog {
         &self.path
     }
 
-    /// Append one entry and flush it to disk.
+    /// Append an `attempt` entry before acting on `item`, so even an action
+    /// that is killed half-way leaves a trace.
+    pub fn record_attempt(&self, item: &PlanItem) -> std::io::Result<()> {
+        self.write(json!({
+            "ts": humantime::format_rfc3339_seconds(SystemTime::now()).to_string(),
+            "tool_version": TOOL_VERSION,
+            "id": item.id,
+            "category": item.category,
+            "kind": item.kind,
+            "action": item.action,
+            "target": item.path.to_string_lossy(),
+            "command": item.command,
+            "paths": item.paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
+            "size_bytes": item.size_bytes,
+            "outcome": "attempt",
+        }))
+    }
+
+    /// Append the outcome of `item` and flush it to disk.
     pub fn record(&self, item: &PlanItem, result: &ItemResult) -> std::io::Result<()> {
         let entry = json!({
             "ts": humantime::format_rfc3339_seconds(SystemTime::now()).to_string(),
@@ -76,6 +94,10 @@ impl ActionLog {
             "destination": result.destination,
             "message": result.message,
         });
+        self.write(entry)
+    }
+
+    fn write(&self, entry: serde_json::Value) -> std::io::Result<()> {
         let mut line = serde_json::to_vec(&entry).map_err(std::io::Error::other)?;
         line.push(b'\n');
         let mut f = self.file.lock().unwrap_or_else(|e| e.into_inner());

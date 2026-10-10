@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::io::{BufRead, IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, ValueEnum};
@@ -287,13 +288,24 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
     } else if interactive {
         print_now("\n");
     }
+    // Ctrl-C: finish (and log) the current item, then stop. A second Ctrl-C
+    // exits at once.
+    install_sigint();
+    ex.stop = Some(&STOP);
     let stream = !args.json;
     let results = ex.execute(&plan, &mut |_, item, r| {
         if stream {
             print_now(&result_line(item, r, &p, &shortener));
         }
     })?;
-    let failed = results.iter().any(|r| r.outcome == Outcome::Failed);
+    let interrupted = STOP.load(Ordering::SeqCst);
+    if interrupted {
+        eprintln!(
+            "{} interrupted: stopped after the current item",
+            warn.paint("warning:", wstyle)
+        );
+    }
+    let failed = interrupted || results.iter().any(|r| r.outcome == Outcome::Failed);
     let text = if args.json {
         json_doc(
             &scan.report.scanned_roots,
@@ -314,6 +326,25 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
         )
     };
     Ok(CleanOutput { text, failed })
+}
+
+static STOP: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_sigint(_: libc::c_int) {
+    if STOP.swap(true, Ordering::SeqCst) {
+        // SAFETY: async-signal-safe; second Ctrl-C means "now".
+        unsafe { libc::_exit(130) };
+    }
+}
+
+fn install_sigint() {
+    // SAFETY: installs a handler that only touches an atomic (or _exits).
+    unsafe {
+        libc::signal(
+            libc::SIGINT,
+            on_sigint as extern "C" fn(libc::c_int) as libc::sighandler_t,
+        );
+    }
 }
 
 fn print_now(s: &str) {

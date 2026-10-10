@@ -4,6 +4,7 @@
 
 use std::ffi::OsString;
 use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -73,10 +74,12 @@ pub(crate) fn which(program: &str, path: Option<&OsString>) -> Option<PathBuf> {
 }
 
 pub(crate) fn run(spec: &Proc<'_>) -> std::io::Result<ProcOutput> {
-    // Same process group as lysosome, so Ctrl-C stops the cleanup command
-    // too instead of leaving it running unsupervised.
+    // Own process group, so a timeout kills wrapper scripts *and* the workers
+    // they started. Ctrl-C doesn't reach the group: the CLI catches it, lets
+    // the current item finish (and get logged), then stops.
     let mut cmd = Command::new(spec.program);
-    cmd.args(spec.args)
+    cmd.process_group(0)
+        .args(spec.args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -129,6 +132,7 @@ pub(crate) fn run(spec: &Proc<'_>) -> std::io::Result<ProcOutput> {
             .map(|s| Box::new(s) as Box<dyn Read + Send>),
     );
 
+    let pid = child.id();
     let deadline = Instant::now() + spec.timeout;
     let mut pause = Duration::from_millis(5);
     let (status, timed_out) = loop {
@@ -139,11 +143,13 @@ pub(crate) fn run(spec: &Proc<'_>) -> std::io::Result<ProcOutput> {
                 pause = (pause * 2).min(Duration::from_millis(100));
             }
             Ok(None) => {
+                kill_group(pid);
                 let _ = child.kill();
                 let _ = child.wait();
                 break (None, true);
             }
             Err(e) => {
+                kill_group(pid);
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(e);
@@ -161,6 +167,15 @@ pub(crate) fn run(spec: &Proc<'_>) -> std::io::Result<ProcOutput> {
         stderr,
         timed_out,
     })
+}
+
+fn kill_group(pid: u32) {
+    if let Ok(pid) = i32::try_from(pid) {
+        // SAFETY: plain syscall; the group id is our own child's pid.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
 }
 
 #[cfg(test)]

@@ -110,7 +110,9 @@ impl Fixture {
         fs::read_to_string(self.log_path())
             .unwrap_or_default()
             .lines()
-            .map(|l| serde_json::from_str(l).expect("log line is JSON"))
+            .map(|l| serde_json::from_str::<Value>(l).expect("log line is JSON"))
+            // Every item gets an "attempt" line before acting; keep outcomes.
+            .filter(|v| v["outcome"] != "attempt")
             .collect()
     }
 }
@@ -254,6 +256,9 @@ fn yes_removes_removable_worktrees_with_git_and_never_touches_review_or_orphans(
     // delete it for good, so clean moves it to the Trash first.
     fs::write(fx.p("code/app/.git/info/exclude"), "secrets.env\n").unwrap();
     fs::write(fx.p("code/app-merged/secrets.env"), "TOKEN=keep-me\n").unwrap();
+    // A clone with local work inside an ignored folder: git would delete it
+    // with the worktree, so that worktree must be kept.
+    fs::create_dir_all(fx.p("code/app-pushed/node_modules/dep/.git")).unwrap();
 
     let out = fx.ok(&[
         "clean",
@@ -267,13 +272,23 @@ fn yes_removes_removable_worktrees_with_git_and_never_touches_review_or_orphans(
     let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
     validate(&doc);
     assert_eq!(doc["mode"], "execute");
-    assert_eq!(doc["summary"]["done"], 3, "{doc:#}");
+    assert_eq!(doc["summary"]["done"], 2, "{doc:#}");
+    assert_eq!(doc["summary"]["skipped"], 1, "{doc:#}");
     assert_eq!(doc["summary"]["failed"], 0);
     for i in doc["items"].as_array().unwrap() {
         assert_eq!(i["action"], "worktree_remove");
         assert_eq!(i["status"], "REMOVABLE");
-        assert_eq!(i["result"]["outcome"], "done");
     }
+    let pushed = item_by_path(&doc, &fx.p("code/app-pushed")).unwrap();
+    assert_eq!(pushed["result"]["outcome"], "skipped");
+    assert!(
+        pushed["result"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("git checkout"),
+        "{pushed:#}"
+    );
+    assert!(fx.p("code/app-pushed/node_modules/dep/.git").is_dir());
 
     assert_eq!(
         fs::read_to_string(fx.trash().join("secrets.env")).unwrap(),
@@ -287,10 +302,9 @@ fn yes_removes_removable_worktrees_with_git_and_never_touches_review_or_orphans(
 
     // Gone from disk and from `git worktree list`; branches kept; pruned.
     let list = fx.git("code/app", &["worktree", "list", "--porcelain"]);
-    for name in ["app-merged", "app-pushed"] {
-        assert!(!fx.p(&format!("code/{name}")).exists());
-        assert!(!list.contains(&format!("/{name}\n")), "{list}");
-    }
+    assert!(!fx.p("code/app-merged").exists());
+    assert!(!list.contains("/app-merged\n"), "{list}");
+    assert!(list.contains("/app-pushed\n"), "{list}");
     assert!(!fx.p("elsewhere/app-outside").exists());
     for branch in ["merged", "pushed", "outside"] {
         assert!(
@@ -313,19 +327,26 @@ fn yes_removes_removable_worktrees_with_git_and_never_touches_review_or_orphans(
     assert!(list.contains("app-dirty") && list.contains("app-locked"));
 
     // Action log: one entry per item.
-    let log = fx.log_lines();
-    assert_eq!(log.len(), 3, "{log:#?}");
+    let raw = fs::read_to_string(fx.log_path()).unwrap();
+    assert_eq!(raw.matches("\"outcome\":\"attempt\"").count(), 3, "{raw}");
+    let log: Vec<Value> = fx
+        .log_lines()
+        .into_iter()
+        .filter(|e| e["outcome"] == "done")
+        .collect();
+    assert_eq!(log.len(), 2, "{log:#?}");
     for e in &log {
         assert_eq!(e["action"], "worktree_remove");
-        assert_eq!(e["outcome"], "done");
         assert_eq!(e["destination"], "git worktree remove");
         assert!(e["ts"].as_str().unwrap().ends_with('Z'));
         assert!(e["target"].as_str().unwrap().contains("app-"));
     }
 
-    // Running again finds nothing left to do.
+    // Running again: only the kept worktree is planned, and kept again.
     let out = fx.ok(&["clean", &fx.s("code"), "--worktrees", "--yes"]);
-    assert!(String::from_utf8_lossy(&out.stdout).contains("Nothing to clean"));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("1 skipped"), "{text}");
+    assert!(fx.p("code/app-pushed").is_dir());
 }
 
 #[test]
@@ -583,7 +604,8 @@ impl Fixture {
         fs::read_to_string(p)
             .unwrap_or_default()
             .lines()
-            .map(|l| serde_json::from_str(l).unwrap())
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .filter(|v| v["outcome"] != "attempt")
             .collect()
     }
 }

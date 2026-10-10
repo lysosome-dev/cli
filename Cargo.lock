@@ -805,6 +805,7 @@ dependencies = [
  "dirs",
  "indicatif",
  "jsonschema",
+ "libc",
  "lysosome-core",
  "owo-colors",
  "serde_json",
