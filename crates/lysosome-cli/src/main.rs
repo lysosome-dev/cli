@@ -262,7 +262,10 @@ fn main() -> ExitCode {
                 Ok(()) if failed => ExitCode::FAILURE,
                 Ok(()) => ExitCode::SUCCESS,
                 // `lysosome worktrees | head` is fine.
-                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe && !failed => {
+                    ExitCode::SUCCESS
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::FAILURE,
                 Err(e) => {
                     eprintln!("error: {e}");
                     ExitCode::FAILURE

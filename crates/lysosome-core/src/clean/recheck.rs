@@ -38,8 +38,23 @@ impl Ctx<'_> {
 
 /// Refuse targets that are never acceptable, whatever a finding says: a
 /// relative path, anything with `..`, the filesystem root or a shallow system
-/// folder, the home folder or one of its ancestors.
+/// folder, the home folder or one of its ancestors. Checked both as written
+/// and as resolved (its parent folder's real location), so a symlinked parent
+/// can't smuggle in `/` or the home folder.
 pub(crate) fn protected(path: &Path, home: &Path) -> Result<(), String> {
+    lexically_protected(path, home)?;
+    if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+        if let Ok(real_parent) = parent.canonicalize() {
+            let resolved = real_parent.join(name);
+            if resolved != path {
+                lexically_protected(&resolved, home)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn lexically_protected(path: &Path, home: &Path) -> Result<(), String> {
     if !path.is_absolute() || path.components().any(|c| c == Component::ParentDir) {
         return Err("not a plain absolute path".into());
     }
@@ -57,6 +72,52 @@ pub(crate) fn protected(path: &Path, home: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Walk a folder about to be removed, never following symlinks, and fail
+/// closed: refuse if anything inside can't be vouched for. Returns its
+/// allocated size (hard links counted once).
+///
+/// Refused: a `.git` entry of any kind when `refuse_git` (a nested checkout,
+/// linked worktree or submodule may hold local work), a folder that can't be
+/// read, and another filesystem mounted inside.
+pub(crate) fn inspect_tree(dir: &Path, refuse_git: bool) -> Result<u64, String> {
+    use std::os::unix::fs::MetadataExt;
+    let root = fs::symlink_metadata(dir).map_err(|e| format!("cannot inspect it: {e}"))?;
+    let dev = root.dev();
+    let mut bytes = root.blocks() * 512;
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let rd = fs::read_dir(&d)
+            .map_err(|e| format!("part of it can't be read ({}: {e})", d.display()))?;
+        for e in rd {
+            let e = e.map_err(|e| format!("part of it can't be read ({}: {e})", d.display()))?;
+            let p = e.path();
+            if refuse_git && e.file_name() == ".git" {
+                return Err(format!(
+                    "it contains a git checkout ({} inside)",
+                    p.strip_prefix(dir).unwrap_or(&p).display()
+                ));
+            }
+            let m = fs::symlink_metadata(&p)
+                .map_err(|e| format!("part of it can't be read ({}: {e})", p.display()))?;
+            if m.nlink() > 1 && !m.is_dir() && !seen.insert((m.dev(), m.ino())) {
+                continue;
+            }
+            bytes += m.blocks() * 512;
+            if m.is_dir() {
+                if m.dev() != dev {
+                    return Err(format!(
+                        "another filesystem is mounted inside ({})",
+                        p.display()
+                    ));
+                }
+                stack.push(p);
+            }
+        }
+    }
+    Ok(bytes)
 }
 
 /// `path` must exist and not be a symlink; if `dir`, it must be a folder.
@@ -129,14 +190,36 @@ pub(crate) fn worktree(
     Ok((status, reason, pre.main_repo))
 }
 
-/// Is `path` (inside `repo_dir`) still ignored by git?
+/// Is `path` (inside `repo_dir`) still ignored by git, with nothing inside it
+/// tracked? (`git check-ignore` calls a folder ignored even when files in it
+/// were force-added, so `git ls-files` must come back empty too.)
 pub(crate) fn still_ignored(ctx: &Ctx<'_>, repo_dir: &Path, path: &Path) -> Result<(), String> {
-    let got = artifacts::ignored_subset(ctx.git()?, repo_dir, &[path.to_path_buf()]);
-    if got.iter().any(|p| p == path) {
-        Ok(())
-    } else {
-        Err("git no longer ignores it".into())
+    let git = ctx.git()?;
+    let got = artifacts::ignored_subset(git, repo_dir, &[path.to_path_buf()]);
+    if !got.iter().any(|p| p == path) {
+        return Err("git no longer ignores it".into());
     }
+    let rel = path
+        .strip_prefix(repo_dir)
+        .map_err(|_| "not inside its repository".to_string())?;
+    let mut spec = std::ffi::OsString::from(":(literal)");
+    spec.push(rel.as_os_str());
+    let out = git.run(
+        repo_dir,
+        [
+            std::ffi::OsStr::new("ls-files"),
+            std::ffi::OsStr::new("-z"),
+            std::ffi::OsStr::new("--"),
+            spec.as_os_str(),
+        ],
+    );
+    if !out.success {
+        return Err("could not list the files git tracks in it".into());
+    }
+    if !out.stdout.is_empty() {
+        return Err("it contains files tracked by git".into());
+    }
+    Ok(())
 }
 
 /// Main-repo status with the scan's rules, right now.
@@ -169,6 +252,48 @@ mod tests {
         assert!(protected(Path::new("/Users/me/code/../.."), home).is_err());
         assert!(protected(Path::new("/Users/me/.npm"), home).is_ok());
         assert!(protected(Path::new("/Users/me/code/app/node_modules"), home).is_ok());
+    }
+
+    #[test]
+    fn protection_also_applies_to_the_resolved_path() {
+        let t = tempfile::tempdir().unwrap();
+        let base = t.path().canonicalize().unwrap();
+        let home = base.join("home");
+        fs::create_dir_all(&home).unwrap();
+        // ~/.cache is a symlink to / : ~/.cache/usr really is /usr.
+        std::os::unix::fs::symlink("/", home.join(".cache")).unwrap();
+        assert!(protected(&home.join(".cache/usr"), &home).is_err());
+        // ~/link-home -> ~ : ~/link-home/x is fine, but a link to ~'s parent isn't.
+        std::os::unix::fs::symlink(&base, home.join("up")).unwrap();
+        assert!(protected(&home.join("up/home"), &home).is_err());
+        assert!(protected(&home.join("real/cache"), &home).is_ok());
+    }
+
+    #[test]
+    fn inspection_fails_closed() {
+        let t = tempfile::tempdir().unwrap();
+        let d = t.path().join("node_modules");
+        fs::create_dir_all(d.join("a/b")).unwrap();
+        fs::write(d.join("a/b/f"), vec![0u8; 5000]).unwrap();
+        assert!(inspect_tree(&d, true).unwrap() >= 5000);
+        // A linked worktree / submodule: `.git` is a file.
+        fs::write(d.join("a/.git"), "gitdir: /elsewhere\n").unwrap();
+        let e = inspect_tree(&d, true).unwrap_err();
+        assert!(e.contains("git checkout"), "{e}");
+        assert!(
+            inspect_tree(&d, false).is_ok(),
+            "caches may hold .git entries"
+        );
+        fs::remove_file(d.join("a/.git")).unwrap();
+        // An unreadable folder can't be vouched for.
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(d.join("a/b"), fs::Permissions::from_mode(0o000)).unwrap();
+        let readable = fs::read_dir(d.join("a/b")).is_ok(); // root can read anyway
+        let r = inspect_tree(&d, true);
+        fs::set_permissions(d.join("a/b"), fs::Permissions::from_mode(0o755)).unwrap();
+        if !readable {
+            assert!(r.unwrap_err().contains("can't be read"));
+        }
     }
 
     #[test]

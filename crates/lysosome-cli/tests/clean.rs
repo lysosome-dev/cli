@@ -250,6 +250,10 @@ fn yes_removes_removable_worktrees_with_git_and_never_touches_review_or_orphans(
         "code/app-active",
     ];
     let before: Vec<_> = untouchable.iter().map(|d| snapshot(&fx.p(d))).collect();
+    // An ignored file that isn't build output: `git worktree remove` would
+    // delete it for good, so clean moves it to the Trash first.
+    fs::write(fx.p("code/app/.git/info/exclude"), "secrets.env\n").unwrap();
+    fs::write(fx.p("code/app-merged/secrets.env"), "TOKEN=keep-me\n").unwrap();
 
     let out = fx.ok(&[
         "clean",
@@ -270,6 +274,16 @@ fn yes_removes_removable_worktrees_with_git_and_never_touches_review_or_orphans(
         assert_eq!(i["status"], "REMOVABLE");
         assert_eq!(i["result"]["outcome"], "done");
     }
+
+    assert_eq!(
+        fs::read_to_string(fx.trash().join("secrets.env")).unwrap(),
+        "TOKEN=keep-me\n",
+        "ignored non-artifact files are rescued to the Trash"
+    );
+    assert!(
+        !fx.trash().join("node_modules").exists(),
+        "regenerable artifact folders are left to git"
+    );
 
     // Gone from disk and from `git worktree list`; branches kept; pruned.
     let list = fx.git("code/app", &["worktree", "list", "--porcelain"]);

@@ -258,7 +258,7 @@ pub fn plan(findings: &[Finding], sel: &Selection, opts: PlanOptions) -> Plan {
             ex.nothing_to_do.add(f.size_bytes);
             continue;
         };
-        if !sel.tiers.contains(&f.tier) {
+        if !sel.tiers.contains(&f.tier) || f.tier == Tier::Review {
             ex.tier.add(f.size_bytes);
             continue;
         }
@@ -449,6 +449,10 @@ fn plan_strip(
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         let tier = artifacts::tier_for(std::ffi::OsStr::new(&name));
+        if tier == Tier::Review {
+            ex.review.add(size);
+            continue;
+        }
         if !sel.tiers.contains(&tier) {
             ex.tier.add(size);
             continue;

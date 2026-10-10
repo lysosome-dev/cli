@@ -160,24 +160,34 @@ fn artifacts_that_changed(tmp: &Path) {
     let trash = DirTrash::new(fx.join("fake-trash"));
     let ex = Executor::new(&trash, home.clone(), None);
 
-    // Between plan and act: old-rust gets a commit (in use again) and a git
-    // checkout appears inside inner's target/. old-web is unchanged.
-    fs::write(fx.join("code/old-rust/src.rs"), "fn main() {}\n").unwrap();
-    git(&fx.join("code/old-rust"), &["add", "src.rs"]);
-    git(&fx.join("code/old-rust"), &["commit", "-qm", "back at it"]);
-    fs::create_dir_all(inner_target.join("dep/.git")).unwrap();
+    // Between plan and act: a file inside old-rust's ignored target/ gets
+    // force-added to git, and a linked checkout (`.git` *file*) appears inside
+    // inner's target/. old-web is unchanged.
+    fs::write(rust_target.join("keep.txt"), "tracked now\n").unwrap();
+    git(&fx.join("code/old-rust"), &["add", "-f", "target/keep.txt"]);
+    git(
+        &fx.join("code/old-rust"),
+        &["commit", "-qm", "track a build file"],
+    );
+    fs::create_dir_all(inner_target.join("dep")).unwrap();
+    fs::write(inner_target.join("dep/.git"), "gitdir: /somewhere/else\n").unwrap();
     let p1 = subset(&[&rust_target, &inner_target, &web_nm]);
     let results = ex.execute(&p1, &mut |_, _, _| {}).unwrap();
 
     let r = outcome_of(&p1, &results, &rust_target);
     assert_eq!(r.outcome, Outcome::Skipped);
-    assert!(r.message.contains("used recently"), "{r:?}");
-    assert!(rust_target.is_dir());
+    // Depending on the git version, check-ignore already refuses the folder
+    // or the `git ls-files` belt catches the tracked file.
+    assert!(
+        r.message.contains("tracked by git") || r.message.contains("no longer ignores"),
+        "{r:?}"
+    );
+    assert!(rust_target.join("keep.txt").is_file());
 
     let r = outcome_of(&p1, &results, &inner_target);
     assert_eq!(r.outcome, Outcome::Skipped);
-    assert!(r.message.contains(".git inside"), "{r:?}");
-    assert!(inner_target.join("dep/.git").is_dir());
+    assert!(r.message.contains("git checkout"), "{r:?}");
+    assert!(inner_target.join("dep/.git").is_file());
 
     // An unchanged project's folder still goes, to the (fake) trash.
     let r = outcome_of(&p1, &results, &web_nm);

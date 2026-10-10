@@ -4,7 +4,6 @@
 
 use std::ffi::OsString;
 use std::io::Read;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -74,9 +73,10 @@ pub(crate) fn which(program: &str, path: Option<&OsString>) -> Option<PathBuf> {
 }
 
 pub(crate) fn run(spec: &Proc<'_>) -> std::io::Result<ProcOutput> {
+    // Same process group as lysosome, so Ctrl-C stops the cleanup command
+    // too instead of leaving it running unsupervised.
     let mut cmd = Command::new(spec.program);
-    cmd.process_group(0)
-        .args(spec.args)
+    cmd.args(spec.args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -105,7 +105,6 @@ pub(crate) fn run(spec: &Proc<'_>) -> std::io::Result<ProcOutput> {
     let Some(mut child) = child else {
         return Err(last_err.unwrap_or_else(|| std::io::Error::other("could not start")));
     };
-    let pid = child.id();
     let drain = |r: Option<Box<dyn Read + Send>>| {
         let (tx, rx) = mpsc::channel();
         if let Some(mut r) = r {
@@ -140,13 +139,11 @@ pub(crate) fn run(spec: &Proc<'_>) -> std::io::Result<ProcOutput> {
                 pause = (pause * 2).min(Duration::from_millis(100));
             }
             Ok(None) => {
-                kill_group(pid);
                 let _ = child.kill();
                 let _ = child.wait();
                 break (None, true);
             }
             Err(e) => {
-                kill_group(pid);
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(e);
@@ -164,15 +161,6 @@ pub(crate) fn run(spec: &Proc<'_>) -> std::io::Result<ProcOutput> {
         stderr,
         timed_out,
     })
-}
-
-fn kill_group(pid: u32) {
-    if let Ok(pid) = i32::try_from(pid) {
-        // SAFETY: plain syscall; the group id is our own child's pid.
-        unsafe {
-            libc::kill(-pid, libc::SIGKILL);
-        }
-    }
 }
 
 #[cfg(test)]
