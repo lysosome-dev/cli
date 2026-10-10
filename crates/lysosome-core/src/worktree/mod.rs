@@ -15,8 +15,8 @@
 //! 1. **walk** — parallel discovery + `.git/worktrees/*` records.
 //! 2. **git** — read gitdir timestamps for *all* worktrees, then run git
 //!    analysis on a bounded pool and classify.
-//! 3. **size** — one parallel pass per worktree measuring total size and
-//!    candidate artifact folders.
+//! 3. **size** — concurrently with git: one parallel pass per worktree
+//!    measuring total size and candidate artifact folders.
 //! 4. **ignore-check** — keep only artifact folders git ignores.
 
 mod analyze;
@@ -287,44 +287,60 @@ pub fn scan(opts: &ScanOptions, progress: &dyn Progress) -> Result<WorktreeScan>
     progress.finish(Phase::Walk);
     let candidates = found.candidates;
 
-    // 2. git: timestamps for everyone first, then git.
-    progress.start(Phase::Git, Some(candidates.len() as u64));
-    let mut worktrees: Vec<Worktree> = timed(&mut timings, Phase::Git, || {
-        let pre: Vec<_> = candidates.par_iter().map(analyze::read_pre_git).collect();
-        let cache = analyze::RepoCache::default();
-        git.pool().install(|| {
-            candidates
-                .par_iter()
-                .zip(pre.par_iter())
-                .map(|(c, pre)| {
-                    let wt = build_worktree(&git, &cache, c, pre, opts);
-                    progress.advance(1);
-                    wt
-                })
-                .collect()
-        })
-    });
-    progress.finish(Phase::Git);
-
-    // 3. size (+ artifact candidates)
-    progress.start(Phase::Size, Some(worktrees.len() as u64));
-    let measured: Vec<(u64, Vec<(PathBuf, u64)>, u64)> = timed(&mut timings, Phase::Size, || {
-        worktrees
+    // 2+3. git analysis and size measurement are independent, so they run
+    // concurrently: git on its bounded pool, sizing on the global pool.
+    // Timestamps for *every* worktree are read before any git process starts.
+    let pre: Vec<_> = candidates.par_iter().map(analyze::read_pre_git).collect();
+    progress.start(Phase::Analyze, Some(2 * candidates.len() as u64));
+    let (git_out, size_out) = std::thread::scope(|s| {
+        let git_job = s.spawn(|| {
+            let t = Instant::now();
+            let cache = analyze::RepoCache::default();
+            let wts: Vec<Worktree> = git.pool().install(|| {
+                candidates
+                    .par_iter()
+                    .zip(pre.par_iter())
+                    .map(|(c, pre)| {
+                        let wt = build_worktree(&git, &cache, c, pre, opts);
+                        progress.advance(1);
+                        wt
+                    })
+                    .collect()
+            });
+            (wts, t.elapsed())
+        });
+        let t = Instant::now();
+        let measured: Vec<Measured> = candidates
             .par_iter()
-            .map(|w| {
-                let out = measure(&w.path);
+            .map(|c| {
+                let out = measure(&c.path);
                 progress.advance(1);
                 out
             })
-            .collect()
+            .collect();
+        let size_elapsed = t.elapsed();
+        let git_out = git_job
+            .join()
+            .unwrap_or_else(|e| std::panic::resume_unwind(e));
+        (git_out, (measured, size_elapsed))
     });
-    progress.finish(Phase::Size);
+    progress.finish(Phase::Analyze);
+    let (mut worktrees, git_elapsed) = git_out;
+    let (measured, size_elapsed) = size_out;
+    timings.push(PhaseTiming {
+        phase: Phase::Git,
+        elapsed: git_elapsed,
+    });
+    timings.push(PhaseTiming {
+        phase: Phase::Size,
+        elapsed: size_elapsed,
+    });
     let mut size_errors = 0;
     let mut parts_per_wt = Vec::with_capacity(worktrees.len());
-    for (w, (total, parts, errs)) in worktrees.iter_mut().zip(measured) {
-        w.size_bytes = total;
-        size_errors += errs;
-        parts_per_wt.push(parts);
+    for (w, m) in worktrees.iter_mut().zip(measured) {
+        w.size_bytes = m.total;
+        size_errors += m.errors;
+        parts_per_wt.push(m.parts);
     }
 
     // 4. ignore-check
@@ -422,9 +438,13 @@ fn build_worktree(
 /// Candidates are folders named in `ARTIFACT_DIRS` whose parent is at most
 /// `ARTIFACT_SEARCH_DEPTH` below the worktree, not inside `.git` or another
 /// artifact folder — the same search as the prototype's `find_artifacts`.
-fn measure(path: &Path) -> (u64, Vec<(PathBuf, u64)>, u64) {
+fn measure(path: &Path) -> Measured {
     let Ok(sizer) = Sizer::new(path) else {
-        return (0, Vec::new(), 1);
+        return Measured {
+            total: 0,
+            parts: Vec::new(),
+            errors: 1,
+        };
     };
     let out = sizer.measure_split(path, &|_, name, depth| {
         if name == ".git" || depth > ARTIFACT_SEARCH_DEPTH + 1 {
@@ -437,5 +457,17 @@ fn measure(path: &Path) -> (u64, Vec<(PathBuf, u64)>, u64) {
             Split::Inline
         }
     });
-    (out.total, out.parts, sizer.errors())
+    Measured {
+        total: out.total,
+        parts: out.parts,
+        errors: sizer.errors(),
+    }
+}
+
+/// Output of [`measure`].
+struct Measured {
+    total: u64,
+    /// Candidate artifact folders and their sizes.
+    parts: Vec<(PathBuf, u64)>,
+    errors: u64,
 }

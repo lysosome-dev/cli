@@ -18,6 +18,9 @@ pub enum Phase {
     Size,
     /// Asking git which artifact folders are ignored.
     IgnoreCheck,
+    /// Progress-only: [`Phase::Git`] and [`Phase::Size`] running concurrently.
+    /// Each work item of either phase advances it.
+    Analyze,
 }
 
 impl Phase {
@@ -27,6 +30,7 @@ impl Phase {
             Phase::Git => "git",
             Phase::Size => "size",
             Phase::IgnoreCheck => "ignore-check",
+            Phase::Analyze => "analyze",
         }
     }
 }

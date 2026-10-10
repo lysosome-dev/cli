@@ -312,14 +312,19 @@ mod tests {
         let root = t.path().canonicalize().unwrap();
         fs::create_dir_all(root.join("stop/inner")).unwrap();
         let seen = Mutex::new(Vec::new());
-        walk(&[root.clone()], &WalkOptions::default(), &NoProgress, |v| {
-            seen.lock().unwrap().push(v.path.to_path_buf());
-            if v.path.ends_with("stop") {
-                Descend::No
-            } else {
-                Descend::Yes
-            }
-        });
+        walk(
+            std::slice::from_ref(&root),
+            &WalkOptions::default(),
+            &NoProgress,
+            |v| {
+                seen.lock().unwrap().push(v.path.to_path_buf());
+                if v.path.ends_with("stop") {
+                    Descend::No
+                } else {
+                    Descend::Yes
+                }
+            },
+        );
         let seen = seen.into_inner().unwrap();
         assert!(seen.contains(&root.join("stop")));
         assert!(!seen.contains(&root.join("stop/inner")));
