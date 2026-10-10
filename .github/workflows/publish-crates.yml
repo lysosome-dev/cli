@@ -56,7 +56,7 @@ jobs:
             echo "::notice title=crates.io publish skipped::CARGO_REGISTRY_TOKEN is not set, so lysosome-core and lysosome were not published to crates.io."
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.token.outputs.present == 'true'
         with:
           persist-credentials: false
