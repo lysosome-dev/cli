@@ -619,7 +619,9 @@ fn analyze_repos(
     let confirmed: Vec<RepoArtifacts> = std::thread::scope(|scope| {
         let measured = &measured;
         scope.spawn(move || {
-            rayon::scope(|rs| {
+            // in_place_scope: the blocking `recv` loop runs on this plain
+            // thread, never occupying a worker of the global pool.
+            rayon::in_place_scope(|rs| {
                 for paths in rx {
                     for p in paths {
                         rs.spawn(move |_| {
@@ -634,7 +636,9 @@ fn analyze_repos(
                 }
             });
         });
-        let tx = Mutex::new(tx);
+        // Owned by this closure, so it drops (ending the sizing loop) when
+        // the closure returns, before the scope joins the sizing thread.
+        let tx = tx;
         git.pool().install(|| {
             by_repo
                 .par_iter()
@@ -649,10 +653,7 @@ fn analyze_repos(
                     }
                     // A send only fails if the sizing thread is gone (it
                     // panicked); the scope re-raises that panic.
-                    let _ = tx
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .send(paths.clone());
+                    let _ = tx.send(paths.clone());
                     let stamp = stamps.get(repo).copied().unwrap_or(0.0);
                     let mut activity = activity_secs(git, repo, stamp);
                     let mut status_failed = false;
@@ -674,12 +675,13 @@ fn analyze_repos(
                 })
                 .collect()
         })
-        // `tx` drops here: the sizing thread drains the rest and finishes.
     });
     let mut measured = measured.into_inner().unwrap_or_else(|e| e.into_inner());
     let measured: Vec<Measured> = confirmed
         .iter()
         .flat_map(|r| r.paths.iter())
+        // Each confirmed path belongs to exactly one repository (attribute()
+        // assigns candidates to their innermost repo), so keys are unique.
         .map(|p| measured.remove(p).unwrap_or_else(Measured::failed))
         .collect();
     let linked = attribute_links(measured.iter().map(|m| &m.links));
@@ -751,7 +753,12 @@ fn measure_collecting(p: &Path) -> Measured {
                 errors: s.errors(),
             }
         }
-        Err(_) => Measured::failed(),
+        // Gone since check-ignore (a build deleted it): 0 bytes, not an
+        // error, as before.
+        Err(_) => Measured {
+            errors: 0,
+            ..Measured::failed()
+        },
     }
 }
 

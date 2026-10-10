@@ -94,13 +94,13 @@ pub struct Sizer {
 
 /// Hard-linked inodes (`nlink > 1`) found by a [`Sizer::collecting`] sizer:
 /// `(dev, ino) -> allocated bytes`, each inode once.
-pub type Links = HashMap<(u64, u64), u64>;
+pub(crate) type Links = HashMap<(u64, u64), u64>;
 
 /// Attribute hard-linked inodes across independently measured trees, in the
 /// given order: each inode's bytes go to the first tree that holds it. With
 /// trees sorted by path this is deterministic, however the trees were
 /// measured (e.g. in parallel). Returns each tree's linked bytes.
-pub fn attribute_links<'a>(trees: impl IntoIterator<Item = &'a Links>) -> Vec<u64> {
+pub(crate) fn attribute_links<'a>(trees: impl IntoIterator<Item = &'a Links>) -> Vec<u64> {
     let mut seen: HashSet<(u64, u64)> = HashSet::new();
     trees
         .into_iter()
@@ -130,14 +130,17 @@ impl Sizer {
     /// total and collected instead (see [`Sizer::take_links`] and
     /// [`attribute_links`]), so several trees can be measured in parallel
     /// and still credit each shared inode to one of them deterministically.
-    pub fn collecting(root: &Path) -> io::Result<Self> {
+    /// Totals only: `measure_split` parts exclude hard-linked bytes too and
+    /// can't be attributed back per part.
+    pub(crate) fn collecting(root: &Path) -> io::Result<Self> {
         let mut s = Sizer::new(root)?;
+        s.seen = Vec::new(); // never consulted in collecting mode
         s.links = Some((0..SHARDS).map(|_| Mutex::new(Links::new())).collect());
         Ok(s)
     }
 
     /// The hard-linked inodes a [`Sizer::collecting`] sizer has seen.
-    pub fn take_links(&self) -> Links {
+    pub(crate) fn take_links(&self) -> Links {
         let mut out = Links::new();
         for shard in self.links.iter().flatten() {
             out.extend(shard.lock().unwrap_or_else(|e| e.into_inner()).drain());
@@ -253,9 +256,11 @@ impl Sizer {
                     continue;
                 }
                 subdirs.push((path.join(&c.name), split, c.own));
-            } else {
+            } else if c.dev == self.dev {
                 total += self.account(c.bytes, c.dev, c.ino, c.nlink);
             }
+            // (A file on another device means we are inside a filesystem
+            // mounted where the parent's listing didn't say so: not ours.)
         }
         let recurse = |(p, split, own): &Subdir| match split {
             Split::Inline => self.dir(p, *own, depth + 1, true, decide, parts),
@@ -360,6 +365,8 @@ mod bulk {
     const ATTR_DIR_MOUNTSTATUS: u32 = 0x0000_0004;
     const ATTR_DIR_ALLOCSIZE: u32 = 0x0000_0008;
     const DIR_MNTSTATUS_MNTPOINT: u32 = 0x0000_0001;
+    /// An autofs trigger: something may be mounted there on access.
+    const DIR_MNTSTATUS_TRIGGER: u32 = 0x0000_0002;
     const VDIR: u32 = 2;
     const BUF_LEN: usize = 128 * 1024;
 
@@ -529,7 +536,7 @@ mod bulk {
         }
         let mut mount_point = false;
         if dirattr & ATTR_DIR_MOUNTSTATUS != 0 {
-            mount_point = rd_u32(rec, f)? & DIR_MNTSTATUS_MNTPOINT != 0;
+            mount_point = rd_u32(rec, f)? & (DIR_MNTSTATUS_MNTPOINT | DIR_MNTSTATUS_TRIGGER) != 0;
             f += 4;
         }
         let mut dir_bytes = None;

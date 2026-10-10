@@ -175,6 +175,8 @@ pub(super) fn runtimes(v: &Value) -> Vec<Item> {
         // Several runtime entries can share one disk image (seen with two
         // iOS 26.4 entries): report it once, or its bytes count twice.
         if let Some(first) = items.iter_mut().find(|i| i.path == path) {
+            // Deleting one entry wouldn't free a shared image (and could
+            // break the other): leave it to Xcode, as a review item.
             let ids = first
                 .details
                 .entry("shared_with_runtime_ids")
@@ -182,6 +184,13 @@ pub(super) fn runtimes(v: &Value) -> Vec<Item> {
             if let Some(a) = ids.as_array_mut() {
                 a.push(Value::from(id));
             }
+            first.command = None;
+            first.tier = Tier::Review;
+            first.reason =
+                "one disk image shared by several runtime entries; remove them in Xcode > Settings > Components"
+                    .into();
+            let used = rt["lastUsedAt"].as_str().and_then(parse_timestamp);
+            first.last_activity = first.last_activity.max(used);
             continue;
         }
         let deletable = rt["deletable"].as_bool().unwrap_or(false);
@@ -235,6 +244,12 @@ mod tests {
         assert_eq!(shared.details["runtime_id"], "A", "lowest id wins");
         assert_eq!(shared.details["shared_with_runtime_ids"], json!(["B"]));
         assert_eq!(shared.size, Some(100));
+        assert_eq!(
+            shared.tier,
+            Tier::Review,
+            "never delete one half of a shared image"
+        );
+        assert!(shared.command.is_none());
     }
 
     #[test]
