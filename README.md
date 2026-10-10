@@ -48,11 +48,13 @@ curl -fsSL https://lysosome.dev/install.sh | sh
 
 **Prebuilt binaries**: download an archive for your platform from the [latest release](https://github.com/lysosome-dev/cli/releases/latest) and check it against its `.sha256` file. Each archive holds the binary, man pages (`man/`) and shell completions (`completions/`).
 
-**From source** (needs a [Rust toolchain](https://rustup.rs), 1.85+):
+**Cargo** (from [crates.io](https://crates.io/crates/lysosome); needs a [Rust toolchain](https://rustup.rs), 1.85+):
 
 ```bash
-cargo install --locked --git https://github.com/lysosome-dev/cli lysosome
+cargo install --locked lysosome
 ```
+
+The latest unreleased code: `cargo install --locked --git https://github.com/lysosome-dev/cli lysosome`.
 
 Check the install with `lysosome --version`.
 
