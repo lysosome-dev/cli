@@ -33,70 +33,99 @@ jobs:
   publish-crates:
     name: Publish to crates.io
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       CARGO_TERM_COLOR: always
-      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      EVENT_NAME: ${{ github.event_name }}
+    # The token is only handed to the two steps that need it, never to
+    # third-party actions.
     steps:
       - name: Check for a crates.io token
         id: token
         shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+          if [ -n "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            # A manual run exists to publish; don't let it go green doing nothing.
+            echo "::error::CARGO_REGISTRY_TOKEN is not set as a repository secret."
+            exit 1
+          else
             echo "::notice title=crates.io publish skipped::CARGO_REGISTRY_TOKEN is not set, so lysosome-core and lysosome were not published to crates.io."
             echo "present=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=true" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/checkout@v4
         if: steps.token.outputs.present == 'true'
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-        if: steps.token.outputs.present == 'true'
-      - name: Publish lysosome-core, then lysosome
+      # No toolchain action: rust-toolchain.toml pins `stable`, which rustup
+      # on the runner installs on first use.
+      - name: Check the tag and versions
+        id: check
         if: steps.token.outputs.present == 'true'
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          meta=$(cargo metadata --no-deps --format-version 1)
-          version_of() {
-            jq -r --arg c "$1" '.packages[] | select(.name == $c) | .version' <<<"$meta"
-          }
-          # Only publish from a release tag naming the exact crate versions.
-          tag_version=${GITHUB_REF#refs/tags/v}
-          if [ "$GITHUB_REF" = "$tag_version" ] || [ -z "$tag_version" ]; then
+          if [[ "$GITHUB_REF" != refs/tags/v?* ]]; then
             echo "::error::Refusing to publish: $GITHUB_REF is not a vX.Y.Z release tag."
             exit 1
           fi
-          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [[ "$tag_version" == *-* ]]; then
-            echo "::error::Refusing to publish prerelease $tag_version from a manual run."
-            exit 1
+          tag_version=${GITHUB_REF#refs/tags/v}
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [[ "$tag_version" == *-* ]]; then
+              echo "::error::Refusing to publish prerelease $tag_version from a manual run."
+              exit 1
+            fi
+            # release.yml only calls this after creating the Release; a manual
+            # run must not publish a version whose release never shipped.
+            if ! gh release view "v$tag_version" -R "$GITHUB_REPOSITORY" >/dev/null; then
+              echo "::error::Refusing to publish: there is no GitHub Release for v$tag_version."
+              exit 1
+            fi
           fi
-          # Dependency order: the CLI depends on lysosome-core by version.
+          # Check every crate before publishing any, so a mismatch can't
+          # leave a half-published release.
+          meta=$(cargo metadata --no-deps --format-version 1)
           for crate in lysosome-core lysosome; do
-            version=$(version_of "$crate")
+            version=$(jq -r --arg c "$crate" '.packages[] | select(.name == $c) | .version' <<<"$meta")
             if [ "$version" != "$tag_version" ]; then
               echo "::error::Refusing to publish: $crate is at version '$version' but the tag is v$tag_version."
               exit 1
             fi
+          done
+          echo "version=$tag_version" >> "$GITHUB_OUTPUT"
+      - name: Publish lysosome-core, then lysosome
+        if: steps.token.outputs.present == 'true'
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Dependency order: the CLI depends on lysosome-core by version.
+          for crate in lysosome-core lysosome; do
+            rc=0
             status=$(curl -sS -o /dev/null -w '%{http_code}' \
+              --connect-timeout 10 --max-time 30 \
               --retry 4 --retry-all-errors --retry-delay 5 \
               -A "lysosome-release (https://github.com/lysosome-dev/cli)" \
-              "https://crates.io/api/v1/crates/$crate/$version") || true
+              "https://crates.io/api/v1/crates/$crate/$VERSION") || rc=$?
             case "$status" in
               200)
-                echo "$crate $version is already on crates.io; skipping."
+                echo "$crate $VERSION is already on crates.io; skipping."
                 ;;
               404)
-                echo "Publishing $crate $version"
+                echo "Publishing $crate $VERSION"
                 # cargo waits until the new version is in the index, so the
                 # next crate can resolve it.
                 cargo publish --locked -p "$crate"
                 ;;
               *)
-                echo "::error::crates.io answered '${status:-no response}' for $crate $version after retries, so it's unclear whether it is published. Re-run this job later."
+                echo "::error::Couldn't tell whether $crate $VERSION is on crates.io (HTTP $status, curl exit $rc, after retries). Re-run this job later."
                 exit 1
                 ;;
             esac
