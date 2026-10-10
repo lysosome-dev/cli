@@ -1,6 +1,7 @@
 //! `lysosome` — the disk cleaner for the agentic coding era.
 
 mod caches;
+mod clean;
 mod completions;
 mod progress;
 mod scan;
@@ -21,7 +22,9 @@ Find the disk your dev tools and coding agents left behind.
 lysosome finds dormant git worktrees, the git-ignored dependencies and build
 output of idle projects, package caches, AI models, Docker and Xcode data, and
 labels every item by how safe it is to delete. Scanning is strictly
-read-only: it never deletes, moves or writes anything.";
+read-only: it never deletes, moves or writes anything. `lysosome clean`
+is the only command that changes anything: it is a dry run unless you pass
+--yes, re-checks every item before acting, and uses the Trash by default.";
 
 /// `--version` adds the commit and target; `-V` stays `lysosome X.Y.Z`.
 const LONG_VERSION: &str = concat!(
@@ -39,6 +42,8 @@ Examples:
   lysosome scan ~/code ~/.worktrees        Scan specific folders (faster)
   lysosome worktrees                       Only dormant git worktrees
   lysosome caches                          Package caches, AI models, Docker, Xcode
+  lysosome clean                           What a cleanup would do (dry run)
+  lysosome clean --yes                     Clean REMOVABLE, cheap-to-rebuild items
   lysosome scan --days 90                  Call anything idle 90+ days dormant
   lysosome scan --json | jq .summary       Machine-readable output";
 
@@ -83,6 +88,34 @@ Examples:
 
 Nothing is ever changed. Suggested `git worktree remove` commands are printed
 for you to review and run yourself.";
+
+const CLEAN_HELP: &str = "\
+What gets cleaned (only REMOVABLE items, never REVIEW, ACTIVE or ORPHAN):
+  worktrees  git -C <main> worktree remove <path> (never --force), then
+             git worktree prune; the branch is kept
+  artifacts  git-ignored node_modules, target, dist... of idle projects,
+             moved to the Trash
+  caches     the tool's own cleanup command (npm cache clean --force,
+             docker builder prune, brew cleanup -s...), else the Trash
+
+Defaults: all three groups, tier `regenerable` only (cheap to rebuild).
+Pass --tier regenerable_expensive to include dependencies, AI models and
+images. Tier `review` is never cleaned.
+
+Safety: dry run unless --yes (or `y` at the prompt on a terminal). Every
+item is re-checked right before acting and skipped if anything changed.
+Files go to the Trash unless --permanent (which needs --yes). Every action
+is appended to an action log (~/Library/Logs/lysosome/actions.log on macOS,
+$XDG_STATE_HOME/lysosome/actions.log elsewhere).
+
+Examples:
+  lysosome clean                              Show what would be cleaned
+  lysosome clean ~/code --worktrees --yes     Remove removable worktrees
+  lysosome clean --strip-artifacts --tier regenerable_expensive ~/.worktrees
+                                              Free node_modules etc. inside
+                                              dormant worktrees, keep them
+  lysosome clean --caches --only 'npm*'       Just the npm cache
+  lysosome clean --older-than 90d --json      Machine-readable plan";
 
 const CACHES_HELP: &str = "\
 Tiers:
@@ -142,6 +175,10 @@ enum Command {
     #[command(visible_alias = "system", after_help = CACHES_HELP)]
     Caches(caches::CachesArgs),
 
+    /// Clean up safely: dry run by default, --yes to act
+    #[command(after_help = CLEAN_HELP)]
+    Clean(clean::CleanArgs),
+
     /// Print a shell completion script (bash, zsh, fish, powershell, elvish)
     #[command(after_help = completions::COMPLETIONS_HELP)]
     Completions(completions::CompletionsArgs),
@@ -196,6 +233,7 @@ fn main() -> ExitCode {
         return code;
     }
     let cli = Cli::parse();
+    let mut failed = false;
     let result = match &cli.command {
         None => {
             // Bare `lysosome`: concise help, success.
@@ -206,6 +244,13 @@ fn main() -> ExitCode {
         Some(Command::Worktrees(args)) => worktrees::run(args, &cli.global),
         Some(Command::Caches(args)) => caches::run(args, &cli.global),
         Some(Command::Completions(args)) => completions::completions(Cli::command(), args),
+        Some(Command::Clean(args)) => match clean::run(args, &cli.global) {
+            Ok(out) => {
+                failed = out.failed;
+                Ok(out.text)
+            }
+            Err(e) => Err(e),
+        },
     };
     match result {
         Ok(output) => {
@@ -214,6 +259,7 @@ fn main() -> ExitCode {
                 .write_all(output.as_bytes())
                 .and_then(|_| stdout.flush())
             {
+                Ok(()) if failed => ExitCode::FAILURE,
                 Ok(()) => ExitCode::SUCCESS,
                 // `lysosome worktrees | head` is fine.
                 Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,

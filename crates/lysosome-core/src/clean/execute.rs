@@ -191,10 +191,16 @@ impl<'a> Executor<'a> {
         plan: &Plan,
         on_item: &mut dyn FnMut(usize, &PlanItem, &ItemResult),
     ) -> crate::Result<Vec<ItemResult>> {
-        let mut git = Git::new(crate::git::DEFAULT_TIMEOUT, Some(2))?;
-        for (k, v) in &self.git_env {
-            git = git.with_env(k.clone(), v.clone());
-        }
+        // Cleaning caches doesn't need git; git-backed items are skipped
+        // (never acted on unchecked) if it can't be run.
+        let git = Git::new(crate::git::DEFAULT_TIMEOUT, Some(2))
+            .ok()
+            .map(|mut g| {
+                for (k, v) in &self.git_env {
+                    g = g.with_env(k.clone(), v.clone());
+                }
+                g
+            });
         let mut results = Vec::with_capacity(plan.items.len());
         let mut log_broken: Option<String> = None;
         for (i, item) in plan.items.iter().enumerate() {
@@ -202,7 +208,7 @@ impl<'a> Executor<'a> {
                 Some(e) => ItemResult::skip(format!("not attempted: the action log failed ({e})")),
                 None => {
                     let ctx = Ctx {
-                        git: &git,
+                        git: git.as_ref(),
                         home: &self.home,
                         dormant_after_days: self.dormant_after_days,
                         now: SystemTime::now(),
@@ -283,7 +289,7 @@ impl<'a> Executor<'a> {
                     .map_err(|e| format!("changed since scan: {e}"))?;
                 recheck::still_ignored(ctx, project, path)
                     .map_err(|e| format!("changed since scan: {e}"))?;
-                let (status, reason) = recheck::repo_status(ctx, project);
+                let (status, reason) = recheck::repo_status(ctx, project)?;
                 if status != Status::Removable {
                     return Err(match status {
                         Status::Active => {

@@ -21,11 +21,19 @@ use super::process;
 
 /// Inputs every re-check needs.
 pub(crate) struct Ctx<'a> {
-    pub git: &'a Git,
+    /// `None` when git can't be run: every git-backed item is then skipped.
+    pub git: Option<&'a Git>,
     pub home: &'a Path,
     pub dormant_after_days: u64,
     pub now: SystemTime,
     pub path_env: Option<&'a OsString>,
+}
+
+impl Ctx<'_> {
+    fn git(&self) -> Result<&Git, String> {
+        self.git
+            .ok_or_else(|| "git could not be run, so it can't be re-checked".to_string())
+    }
 }
 
 /// Refuse targets that are never acceptable, whatever a finding says: a
@@ -116,14 +124,14 @@ pub(crate) fn worktree(
     if !pre.gitdir_exists {
         return Err("its git metadata is gone (orphan)".into());
     }
-    let a = analyze::analyze(ctx.git, &RepoCache::default(), &cand, &pre, ctx.now);
+    let a = analyze::analyze(ctx.git()?, &RepoCache::default(), &cand, &pre, ctx.now);
     let (status, reason) = classify(&a.facts, ctx.dormant_after_days);
     Ok((status, reason, pre.main_repo))
 }
 
 /// Is `path` (inside `repo_dir`) still ignored by git?
 pub(crate) fn still_ignored(ctx: &Ctx<'_>, repo_dir: &Path, path: &Path) -> Result<(), String> {
-    let got = artifacts::ignored_subset(ctx.git, repo_dir, &[path.to_path_buf()]);
+    let got = artifacts::ignored_subset(ctx.git()?, repo_dir, &[path.to_path_buf()]);
     if got.iter().any(|p| p == path) {
         Ok(())
     } else {
@@ -132,8 +140,13 @@ pub(crate) fn still_ignored(ctx: &Ctx<'_>, repo_dir: &Path, path: &Path) -> Resu
 }
 
 /// Main-repo status with the scan's rules, right now.
-pub(crate) fn repo_status(ctx: &Ctx<'_>, repo: &Path) -> (Status, String) {
-    projects::repo_status(ctx.git, repo, ctx.now, ctx.dormant_after_days)
+pub(crate) fn repo_status(ctx: &Ctx<'_>, repo: &Path) -> Result<(Status, String), String> {
+    Ok(projects::repo_status(
+        ctx.git()?,
+        repo,
+        ctx.now,
+        ctx.dormant_after_days,
+    ))
 }
 
 /// Resolve a command's program on PATH.

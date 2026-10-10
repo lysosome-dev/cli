@@ -157,6 +157,10 @@ pub struct PlanItem {
     #[serde(skip_serializing_if = "Option::is_none", with = "lossy_path_opt")]
     pub project: Option<PathBuf>,
     pub size_bytes: u64,
+    /// The size is an upper bound (e.g. `pnpm store prune` frees only
+    /// unreferenced packages): show it as "up to".
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub size_is_upper_bound: bool,
     pub tier: Tier,
     /// Status of the finding when planned (`REVIEW` only for artifacts
     /// stripped from a `REVIEW` worktree).
@@ -317,6 +321,11 @@ fn item_for(
         path: f.path.clone(),
         project: None,
         size_bytes: f.size_bytes,
+        size_is_upper_bound: f
+            .details
+            .get("size_is_upper_bound")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         tier: f.tier,
         status: f.status,
         reason: f.reason.clone(),
@@ -363,9 +372,11 @@ fn item_for(
                 if argv.is_empty() || argv[0].is_empty() {
                     return None;
                 }
-                let existing = std::fs::symlink_metadata(&f.path)
-                    .is_ok_and(|m| m.is_dir())
-                    .then(|| f.path.clone());
+                // Pseudo-paths (`docker://image/...`) are not filesystem
+                // paths: never look them up on disk.
+                let existing = (f.path.is_absolute()
+                    && std::fs::symlink_metadata(&f.path).is_ok_and(|m| m.is_dir()))
+                .then(|| f.path.clone());
                 let mut item = base(
                     ActionKind::Command,
                     Guard::Command {
@@ -376,7 +387,9 @@ fn item_for(
                 Some(item)
             }
             CleanupAction::Trash => {
-                if paths.is_empty() || paths.iter().any(|p| !p.is_absolute()) {
+                // Only real absolute filesystem paths (never `scheme://` pseudo-paths).
+                let bad = |p: &PathBuf| !p.is_absolute() || p.to_string_lossy().contains("://");
+                if paths.is_empty() || paths.iter().any(bad) {
                     return None;
                 }
                 let parents = paths
@@ -460,6 +473,7 @@ fn plan_strip(
             path: path.clone(),
             project: Some(f.path.clone()),
             size_bytes: size,
+            size_is_upper_bound: false,
             tier,
             status: f.status,
             reason: "git-ignored artifact folder; the worktree is kept".into(),

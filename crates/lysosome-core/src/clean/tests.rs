@@ -545,3 +545,43 @@ fn real_trash_is_recoverable() {
         b"recover me"
     );
 }
+
+#[test]
+fn docker_pseudo_paths_are_commands_and_never_trash_targets() {
+    let mut img = cache_cmd("docker-image", Tier::Regenerable, 5);
+    img.category = Category::Containers;
+    img.path = PathBuf::from("docker://image/sha256:1111");
+    img.cleanup = Some(Cleanup::command(vec![
+        "docker".into(),
+        "image".into(),
+        "rm".into(),
+        "web:1.0".into(),
+    ]));
+    let mut bogus = img.clone();
+    bogus.id = "docker-image:bogus".into();
+    bogus.cleanup = Some(Cleanup::trash(vec!["docker://image/sha256:1111".into()]));
+    let mut pnpm = cache_cmd("pnpm-store", Tier::Regenerable, 7);
+    pnpm.details = json!({"name": "pnpm store", "size_is_upper_bound": true});
+    let p = plan(
+        &[img, bogus, pnpm],
+        &Selection::default(),
+        PlanOptions::default(),
+    );
+    assert_eq!(p.items.len(), 2, "{:?}", p.items);
+    let docker = p.items.iter().find(|i| i.kind == "docker-image").unwrap();
+    assert_eq!(docker.action, ActionKind::Command);
+    assert_eq!(
+        docker.guard,
+        Guard::Command {
+            existing_path: None
+        }
+    );
+    assert_eq!(p.excluded.nothing_to_do.items, 1);
+    assert!(
+        p.items
+            .iter()
+            .find(|i| i.kind == "pnpm-store")
+            .unwrap()
+            .size_is_upper_bound
+    );
+}
