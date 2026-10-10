@@ -16,8 +16,12 @@
 #     build/              TRACKED, 2 MiB: never an artifact
 #     coverage/           untracked but NOT ignored: never an artifact
 #     target -> big/      symlink named like an artifact: never followed or counted
+#     .venv/src/mylib/.git  ignored .venv holding an editable git checkout:
+#                         REVIEW (tier review, no cleanup) — it may hold local work
 #   code/old-rust         repo idle since 2020
 #     target/             ignored, 3 MiB          REMOVABLE regenerable
+#   code/old-edited       repo committed in 2020 but with a tracked file edited now
+#     node_modules/       ignored, 1 MiB          ACTIVE (uncommitted edits count as activity)
 #   code/fresh-py         repo with a commit made now
 #     .venv/              ignored, 2 MiB          ACTIVE regenerable_expensive
 #   code/mono             repo idle since 2020 (remote: remote.git), no artifacts itself
@@ -82,7 +86,7 @@ mib "$DEST/big" blob.bin 30
 # --- old-web ------------------------------------------------------------------
 W="$CODE/old-web"
 q git init "$W"
-printf 'node_modules/\ndist/\n' > "$W/.gitignore"
+printf 'node_modules/\ndist/\n.venv/\n' > "$W/.gitignore"
 mib "$W/build" tracked.bin 2
 printf '# web\n' > "$W/README.md"
 mkdir -p "$W/packages/api"
@@ -96,6 +100,19 @@ mib "$W/dist" app.bin 1
 mib "$W/packages/api/node_modules/lib" lib.bin 1
 mib "$W/coverage" lcov.bin 1
 ln -s "$DEST/big" "$W/target"
+mkdir -p "$W/.venv/src"
+q git init "$W/.venv/src/mylib"
+printf 'local edits\n' > "$W/.venv/src/mylib/lib.py"
+
+# --- old-edited ---------------------------------------------------------------
+E="$CODE/old-edited"
+q git init "$E"
+printf 'node_modules/\n' > "$E/.gitignore"
+printf '# edited\n' > "$E/README.md"
+git -C "$E" add .gitignore README.md
+old_commit "$E" "initial"
+mib "$E/node_modules/x" x.bin 1
+printf 'work in progress\n' >> "$E/README.md"
 
 # --- old-rust -----------------------------------------------------------------
 R="$CODE/old-rust"
@@ -141,8 +158,13 @@ mib "$CODE/mono-active-wt/node_modules/dep" dep.bin 1
 mib "$CODE/loose/node_modules/x" x.bin 1
 
 # --- back-date activity (last step) -------------------------------------------
+# old-web's untracked (not ignored) coverage/ and target symlink are old too,
+# so the uncommitted-changes check sees no recent edits.
+touch -t "$OLD_TOUCH" "$W/coverage/lcov.bin" "$W/coverage"
+touch -h -t "$OLD_TOUCH" "$W/target"
 backdate_gitdir "$W/.git"
 backdate_gitdir "$R/.git"
+backdate_gitdir "$E/.git"
 backdate_gitdir "$M/.git"
 backdate_gitdir "$M/.git/worktrees/mono-old-wt"
 backdate_gitdir "$L/.git"

@@ -130,6 +130,13 @@ fn artifact_statuses_tiers_and_exclusions() {
             "old-rust/target",
             ("REMOVABLE", "regenerable", "target", "repo"),
         ),
+        // An editable git checkout inside .venv: never offered for cleanup.
+        ("old-web/.venv", ("REVIEW", "review", ".venv", "repo")),
+        // Old commit, but a tracked file edited now: in use.
+        (
+            "old-edited/node_modules",
+            ("ACTIVE", "regenerable_expensive", "node_modules", "repo"),
+        ),
         (
             "fresh-py/.venv",
             ("ACTIVE", "regenerable_expensive", ".venv", "repo"),
@@ -183,9 +190,42 @@ fn artifact_statuses_tiers_and_exclusions() {
             assert!(f["cleanup"].get("command").is_none(), "{name}");
         } else {
             assert!(f["cleanup"].is_null(), "{name}");
+        }
+        if f["status"] == "ACTIVE" {
             assert_eq!(f["reason"], "", "{name}");
         }
     }
+    assert_eq!(
+        arts["old-web/.venv"]["reason"],
+        "contains a git checkout (.git inside); it may hold local work"
+    );
+}
+
+#[test]
+fn deep_artifacts_and_roots_inside_worktrees() {
+    let fx = Fixture::projects();
+    // --depth limits the repository search, not the artifact search inside repos.
+    let report = fx.json(&["--depth", "1"]);
+    let arts: Vec<String> = findings(&report)
+        .iter()
+        .filter(|f| f["category"] == "artifacts")
+        .map(|f| fx.rel(f))
+        .collect();
+    assert!(
+        arts.contains(&"old-web/packages/api/node_modules".to_string()),
+        "{arts:?}"
+    );
+
+    // A root inside a linked worktree still analyzes that worktree.
+    let sub = fx.code().join("mono-old-wt/vendor");
+    let out = fx.run(&["scan", sub.to_str().unwrap(), "--json"]);
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let wts: Vec<String> = findings(&report)
+        .iter()
+        .filter(|f| f["kind"] == "worktree")
+        .map(|f| fx.rel(f))
+        .collect();
+    assert_eq!(wts, ["mono-old-wt"]);
 }
 
 #[test]

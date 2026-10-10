@@ -19,7 +19,7 @@
 //!    measuring total size and candidate artifact folders.
 //! 4. **ignore-check** — keep only artifact folders git ignores.
 
-mod analyze;
+pub(crate) mod analyze;
 pub mod classify;
 pub(crate) mod discover;
 

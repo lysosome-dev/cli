@@ -33,6 +33,9 @@ pub(crate) struct Discovery {
     /// Folders named like an artifact (`ARTIFACT_DIRS`) seen by the walk, not
     /// yet attributed to a repository or ignore-checked. Symlinks excluded.
     pub artifact_candidates: Vec<PathBuf>,
+    /// Subfolders of folders at the depth limit: listed, never visited. The
+    /// project scanner continues the artifact search below them inside repos.
+    pub frontier: Vec<PathBuf>,
 }
 
 #[derive(Default)]
@@ -41,6 +44,7 @@ struct Found {
     mains: BTreeSet<PathBuf>,
     repo_roots: BTreeSet<PathBuf>,
     artifacts: Vec<PathBuf>,
+    frontier: Vec<PathBuf>,
 }
 
 /// Discover repositories under `roots` (absolute, canonical directories).
@@ -59,6 +63,17 @@ pub(crate) fn discover(roots: &[PathBuf], max_depth: usize, progress: &dyn Progr
             .collect();
         if !arts.is_empty() {
             lock(&found).artifacts.extend(arts);
+        }
+        if v.depth >= max_depth {
+            let deeper: Vec<PathBuf> = v
+                .entries
+                .iter()
+                .filter(|e| e.kind == EntryKind::Dir && !walk::is_skipped(&e.name))
+                .map(|e| v.path.join(&e.name))
+                .collect();
+            if !deeper.is_empty() {
+                lock(&found).frontier.extend(deeper);
+            }
         }
         if let Some(e) = v.entry(".git") {
             lock(&found).repo_roots.insert(v.path.to_path_buf());
@@ -87,6 +102,7 @@ pub(crate) fn discover(roots: &[PathBuf], max_depth: usize, progress: &dyn Progr
         mains,
         repo_roots,
         mut artifacts,
+        frontier,
     } = found.into_inner().unwrap_or_else(|e| e.into_inner());
     artifacts.sort();
 
@@ -145,6 +161,7 @@ pub(crate) fn discover(roots: &[PathBuf], max_depth: usize, progress: &dyn Progr
         mains,
         repo_roots,
         artifact_candidates: artifacts,
+        frontier,
     }
 }
 
@@ -165,7 +182,7 @@ fn dotgit_kind(kind: EntryKind) -> DotGit {
 }
 
 /// A linked worktree's gitdir is `<common>/worktrees/<name>`.
-fn is_linked_worktree_gitdir(gd: &Path) -> bool {
+pub(crate) fn is_linked_worktree_gitdir(gd: &Path) -> bool {
     gd.parent()
         .and_then(Path::file_name)
         .is_some_and(|n| n == "worktrees")

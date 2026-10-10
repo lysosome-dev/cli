@@ -16,7 +16,7 @@ use anyhow::Result;
 use lysosome_core::detector::ScanContext;
 use lysosome_core::detectors::{self, ScanRun};
 use lysosome_core::model::{Category, Finding, Report, Status, Tier};
-use lysosome_core::progress::NoProgress;
+use lysosome_core::progress::{NoProgress, Phase};
 use owo_colors::Style;
 
 use crate::progress::Spinner;
@@ -93,7 +93,10 @@ fn render_profile(run: &ScanRun, p: &Painter) -> String {
     let mut line = Vec::new();
     if let Some(proj) = &run.projects {
         for t in &proj.stats.timings {
-            line.push(format!("{} {}", t.phase, secs(t.elapsed)));
+            // git ∥ size (worktrees) ∥ artifacts (main repos) overlap in time.
+            let concurrent = matches!(t.phase, Phase::Size | Phase::Artifacts);
+            let mark = if concurrent { "∥ " } else { "" };
+            line.push(format!("{mark}{} {}", t.phase, secs(t.elapsed)));
         }
     }
     writeln!(
@@ -176,11 +179,7 @@ fn render(run: &ScanRun, args: &ScanArgs, p: &Painter, paths: &PathShortener) ->
     headline(o, report, args, p);
     tier_summary(o, report, p);
 
-    let view = View {
-        days: args.days,
-        all: args.all,
-        top: args.top,
-    };
+    let view = View::from(args);
     let scanned: Vec<Category> = run
         .runs
         .iter()

@@ -142,33 +142,10 @@ enum Command {
     Completions(completions::CompletionsArgs),
 }
 
-#[derive(Debug, Clone, Args)]
-pub struct WorktreesArgs {
-    /// Folders to scan [default: your home folder]
-    #[arg(value_name = "ROOTS")]
-    pub roots: Vec<PathBuf>,
+/// `lysosome worktrees` takes the same options as `lysosome scan`.
+pub type WorktreesArgs = ScanArgs;
 
-    /// Idle days before a worktree counts as dormant
-    #[arg(long, value_name = "N", default_value_t = lysosome_core::worktree::DEFAULT_DORMANT_DAYS)]
-    pub days: u64,
-
-    /// Maximum folder depth to search for repositories
-    #[arg(long, value_name = "N", default_value_t = lysosome_core::worktree::DEFAULT_MAX_DEPTH)]
-    pub depth: usize,
-
-    /// Also list active worktrees in the table
-    #[arg(long)]
-    pub all: bool,
-
-    /// Rows to show in the table
-    #[arg(long, value_name = "N", default_value_t = 30)]
-    pub top: usize,
-
-    /// Print the versioned JSON report instead of a table
-    #[arg(long)]
-    pub json: bool,
-}
-
+/// Options shared by `scan` and `worktrees`.
 #[derive(Debug, Clone, Args)]
 pub struct ScanArgs {
     /// Folders to scan [default: your home folder]
@@ -187,7 +164,7 @@ pub struct ScanArgs {
     #[arg(long)]
     pub all: bool,
 
-    /// Rows (or projects) to show per section
+    /// Rows to show per section (in `scan`, projects count as one row)
     #[arg(long, value_name = "N", default_value_t = 30)]
     pub top: usize,
 

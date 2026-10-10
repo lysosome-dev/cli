@@ -67,6 +67,11 @@ pub const SKIP_DIRS: &[&str] = &[
     ".Spotlight-V100",
 ];
 
+/// Is `name` `.git` or in [`SKIP_DIRS`] (never descended by default)?
+pub fn is_skipped(name: &OsStr) -> bool {
+    name == ".git" || SKIP_DIRS.iter().any(|s| OsStr::new(s) == name)
+}
+
 /// The type of a directory entry, determined without following symlinks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {

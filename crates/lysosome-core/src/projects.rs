@@ -26,17 +26,39 @@
 //!   **active** worktree are emitted as `ACTIVE` artifact findings, which never
 //!   count towards summary totals.
 //! * An artifact folder nested inside another ignored artifact folder is
-//!   folded into the outer one, and an artifact folder that contains another
-//!   repository or worktree is skipped (we can't vouch it's all regenerable).
+//!   folded into the outer one, and an artifact folder that contains a
+//!   repository the walk found is skipped.
 //! * One hard-link de-duplication domain per filesystem spans all main-repo
 //!   artifacts, so files hard-linked between projects count once in total.
+//!   Projects are measured in path order, so the project credited with a
+//!   shared inode is stable from run to run.
+//!
+//! Known limitation: the worktree pipeline measures each worktree in its own
+//! de-duplication domain (Milestone 1 behavior), so a file hard-linked between
+//! a dormant worktree and a main repo's artifact folder (e.g. via a pnpm store)
+//! counts in both. Like APFS clones, hard links mean deleting one copy may free
+//! less than its reported size.
+//!
+//! # Safety
+//! * Artifact folders containing a `.git` folder anywhere inside (e.g. an
+//!   editable `pip install -e git+...` checkout in `.venv/src`, which the
+//!   walk never enters) are `REVIEW` with tier `review` and no cleanup.
+//! * A dormant-looking main repo with uncommitted or untracked changes takes
+//!   the newest mtime of those files as activity, so a project edited today is
+//!   `ACTIVE` even if its last commit is old. If `git status` fails, `REVIEW`.
+//! * Main repos are searched for artifacts [`ARTIFACT_SEARCH_DEPTH`] levels
+//!   past the walk's `--depth` limit, so deep monorepo folders aren't missed.
+//!
+//! [`ARTIFACT_SEARCH_DEPTH`]: crate::artifacts::ARTIFACT_SEARCH_DEPTH
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime};
 
 use rayon::prelude::*;
 use serde_json::json;
@@ -45,11 +67,14 @@ use crate::artifacts;
 use crate::error::{Error, Result};
 use crate::git::Git;
 use crate::model::{Category, Cleanup, Finding, Skipped, Status, Tier};
-use crate::progress::{Phase, Progress};
-use crate::size::Sizer;
+use crate::progress::{NoProgress, Phase, Progress};
+use crate::size::{Sizer, Split};
+use crate::walk::{self, Descend, EntryKind, WalkOptions};
+use crate::worktree::analyze::{activity_secs, git_stamp_secs, idle, mtime_secs};
 use crate::worktree::{self, discover, PhaseTiming, ScanOptions, WorktreeScan};
 
-const DAY: f64 = 86_400.0;
+/// Reason for artifact folders that hold a git checkout.
+pub const NESTED_GIT_REASON: &str = "contains a git checkout (.git inside); it may hold local work";
 
 /// Is the project a main repository or a linked worktree?
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +100,8 @@ pub struct ProjectArtifact {
     pub kind: String,
     pub size_bytes: u64,
     pub tier: Tier,
+    /// A `.git` folder exists somewhere inside: never offered for cleanup.
+    pub contains_git: bool,
 }
 
 /// A repository (or active worktree) holding at least one artifact folder.
@@ -102,15 +129,24 @@ impl Project {
     pub fn to_findings(&self) -> Vec<Finding> {
         self.artifacts
             .iter()
-            .map(|a| Finding {
+            .map(|a| {
+                let review = a.contains_git && self.status.is_dormant();
+                let (status, reason, tier) = if review {
+                    (Status::Review, NESTED_GIT_REASON.to_string(), Tier::Review)
+                } else {
+                    (self.status, self.reason.clone(), a.tier)
+                };
+                (a, status, reason, tier)
+            })
+            .map(|(a, status, reason, tier)| Finding {
                 id: format!("artifact:{}", a.path.display()),
                 category: Category::Artifacts,
                 kind: a.kind.clone(),
                 path: a.path.clone(),
                 size_bytes: a.size_bytes,
-                tier: a.tier,
-                status: self.status,
-                reason: self.reason.clone(),
+                tier,
+                status,
+                reason,
                 last_activity: self.last_activity,
                 details: json!({
                     "project": self.path.to_string_lossy(),
@@ -120,7 +156,7 @@ impl Project {
                         .unwrap_or(&a.path)
                         .to_string_lossy(),
                 }),
-                cleanup: (self.status == Status::Removable)
+                cleanup: (status == Status::Removable)
                     .then(|| Cleanup::trash(vec![a.path.clone()])),
             })
             .collect()
@@ -193,16 +229,26 @@ pub fn scan(opts: &ScanOptions, progress: &dyn Progress) -> Result<ProjectScan> 
     let mut timings = Vec::new();
 
     progress.start(Phase::Walk, None);
-    let found = worktree::timed(&mut timings, Phase::Walk, || {
-        discover::discover(&walk_roots, opts.max_depth, progress)
-    });
+    let (found, mains, repo_roots, wt_candidates, candidates) =
+        worktree::timed(&mut timings, Phase::Walk, || {
+            let found = discover::discover(&walk_roots, opts.max_depth, progress);
+            let mut mains = found.mains;
+            let mut repo_roots = found.repo_roots;
+            let mut wt_candidates = found.candidates;
+            add_enclosing_repos(&walk_roots, &mut mains, &mut repo_roots, &mut wt_candidates);
+            let mut candidates = found.artifact_candidates;
+            deep_search(&found.frontier, &mains, &mut repo_roots, &mut candidates);
+            let rest = discover::Discovery {
+                stale: found.stale,
+                walk: found.walk,
+                ..Default::default()
+            };
+            (rest, mains, repo_roots, wt_candidates, candidates)
+        });
     progress.finish(Phase::Walk);
 
-    let mut mains = found.mains;
-    let mut repo_roots = found.repo_roots;
-    add_enclosing_repos(&walk_roots, &mut mains, &mut repo_roots);
-    let n_candidates = found.artifact_candidates.len() as u64;
-    let by_repo = attribute(found.artifact_candidates, &mains, &repo_roots);
+    let n_candidates = candidates.len() as u64;
+    let by_repo = attribute(candidates, &mains, &repo_roots);
 
     // Safety rule 2: every main repo's timestamps before any git process runs.
     let stamps: BTreeMap<PathBuf, f64> = by_repo
@@ -213,18 +259,23 @@ pub fn scan(opts: &ScanOptions, progress: &dyn Progress) -> Result<ProjectScan> 
     let wt_found = worktree::Found {
         roots,
         missing_roots,
-        candidates: found.candidates,
+        candidates: wt_candidates,
         stale: found.stale,
         walk: found.walk,
     };
+    let reporter = Reporter::default();
     let (wt_scan, (mut projects, size_errors, art_elapsed)) = std::thread::scope(|s| {
         let art_job = s.spawn(|| {
             let t = Instant::now();
-            let (projects, errors) = analyze_repos(&git, &by_repo, &stamps, &repo_roots, opts);
+            let (projects, errors) =
+                analyze_repos(&git, &by_repo, &stamps, &repo_roots, opts, &reporter);
             (projects, errors, t.elapsed())
         });
         let wt_scan = worktree::analyze_found(&git, opts, wt_found, timings, started, progress);
+        // The worktree pipeline owned the progress display until now; hand it
+        // to the artifact pipeline (which may still be sizing).
         progress.start(Phase::Artifacts, None);
+        reporter.attach(progress);
         let art = art_job
             .join()
             .unwrap_or_else(|e| std::panic::resume_unwind(e));
@@ -253,7 +304,7 @@ pub fn scan(opts: &ScanOptions, progress: &dyn Progress) -> Result<ProjectScan> 
             artifacts: w
                 .artifacts
                 .iter()
-                .map(|a| artifact(a.path.clone(), a.size_bytes))
+                .map(|a| artifact(a.path.clone(), a.size_bytes, false))
                 .collect(),
         });
     }
@@ -280,37 +331,124 @@ pub fn scan(opts: &ScanOptions, progress: &dyn Progress) -> Result<ProjectScan> 
     })
 }
 
-fn artifact(path: PathBuf, size_bytes: u64) -> ProjectArtifact {
+fn artifact(path: PathBuf, size_bytes: u64, contains_git: bool) -> ProjectArtifact {
     let name = path.file_name().unwrap_or_default();
     ProjectArtifact {
         kind: name.to_string_lossy().into_owned(),
         tier: artifacts::tier_for(name),
         path,
         size_bytes,
+        contains_git,
+    }
+}
+
+/// Forwards artifact-sizing progress once the worktree pipeline is done with
+/// the (single) progress display; counts silently before that.
+#[derive(Default)]
+struct Reporter<'a> {
+    done: AtomicU64,
+    attached: AtomicBool,
+    target: Mutex<Option<&'a dyn Progress>>,
+}
+
+impl<'a> Reporter<'a> {
+    fn attach(&self, p: &'a dyn Progress) {
+        *self.target.lock().unwrap_or_else(|e| e.into_inner()) = Some(p);
+        self.attached.store(true, Ordering::SeqCst);
+        p.advance(self.done.load(Ordering::SeqCst));
+    }
+
+    fn tick(&self) {
+        self.done.fetch_add(1, Ordering::SeqCst);
+        if self.attached.load(Ordering::SeqCst) {
+            if let Some(p) = *self.target.lock().unwrap_or_else(|e| e.into_inner()) {
+                p.advance(1);
+            }
+        }
     }
 }
 
 /// A scan root inside a repository (`lysosome scan ~/code/app/packages`) still
 /// belongs to that repository: look above each root for the nearest `.git`.
+/// A main repo is added as such; a linked worktree becomes a worktree
+/// candidate so the worktree pipeline analyzes it (and its artifacts).
 fn add_enclosing_repos(
     walk_roots: &[PathBuf],
     mains: &mut BTreeSet<PathBuf>,
     repo_roots: &mut BTreeSet<PathBuf>,
+    wt_candidates: &mut Vec<discover::Candidate>,
 ) {
     for root in walk_roots {
         for dir in root.ancestors().skip(1) {
-            match fs::symlink_metadata(dir.join(".git")) {
-                Ok(m) => {
-                    if m.is_dir() {
-                        mains.insert(dir.to_path_buf());
+            let dotgit = dir.join(".git");
+            let Ok(m) = fs::symlink_metadata(&dotgit) else {
+                continue;
+            };
+            if m.is_dir() {
+                mains.insert(dir.to_path_buf());
+            } else if m.is_file() {
+                if let Some(gd) = discover::read_gitdir_pointer(&dotgit) {
+                    let known = wt_candidates.iter().any(|c| c.path == dir);
+                    if discover::is_linked_worktree_gitdir(&gd) && !known {
+                        wt_candidates.push(discover::Candidate {
+                            path: dir.to_path_buf(),
+                            gitdir: gd,
+                        });
+                        wt_candidates.sort_by(|a, b| a.path.cmp(&b.path));
                     }
-                    repo_roots.insert(dir.to_path_buf());
-                    break;
                 }
-                Err(_) => continue,
             }
+            repo_roots.insert(dir.to_path_buf());
+            break;
         }
     }
+}
+
+/// Continue the artifact search below the walk's depth limit, but only inside
+/// main repos: walk each frontier folder whose innermost repository is a main
+/// repo for [`artifacts::ARTIFACT_SEARCH_DEPTH`] more levels, collecting
+/// artifact-named folders and repository boundaries.
+fn deep_search(
+    frontier: &[PathBuf],
+    mains: &BTreeSet<PathBuf>,
+    repo_roots: &mut BTreeSet<PathBuf>,
+    candidates: &mut Vec<PathBuf>,
+) {
+    let roots: Vec<PathBuf> = frontier
+        .iter()
+        .filter(|f| {
+            f.ancestors()
+                .skip(1)
+                .find(|a| repo_roots.contains(*a))
+                .is_some_and(|owner| mains.contains(owner))
+        })
+        .cloned()
+        .collect();
+    if roots.is_empty() {
+        return;
+    }
+    let found: Mutex<(Vec<PathBuf>, Vec<PathBuf>)> = Mutex::default();
+    let opts = WalkOptions {
+        max_depth: artifacts::ARTIFACT_SEARCH_DEPTH,
+        ..WalkOptions::default()
+    };
+    walk::walk(&roots, &opts, &NoProgress, |v| {
+        let mut f = found.lock().unwrap_or_else(|e| e.into_inner());
+        for e in v.entries {
+            if e.kind == EntryKind::Dir && artifacts::is_artifact_dir(&e.name) {
+                f.0.push(v.path.join(&e.name));
+            }
+        }
+        if v.entry(".git").is_some() {
+            f.1.push(v.path.to_path_buf());
+        }
+        Descend::Yes
+    });
+    let (arts, repos) = found.into_inner().unwrap_or_else(|e| e.into_inner());
+    candidates.extend(arts);
+    candidates.sort();
+    candidates.dedup();
+    repo_roots.extend(repos);
 }
 
 /// Group candidate folders by their innermost repository, keeping only those
@@ -337,25 +475,75 @@ fn attribute(
     by_repo
 }
 
-/// Max mtime (seconds) of a git dir's `index`, `HEAD` and `logs/HEAD`; 0 if none.
-fn git_stamp_secs(git_dir: &Path) -> f64 {
-    ["index", "HEAD", "logs/HEAD"]
-        .iter()
-        .filter_map(|f| {
-            fs::metadata(git_dir.join(f))
-                .and_then(|m| m.modified())
-                .ok()
-        })
-        .filter_map(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs_f64())
-        .fold(0.0, f64::max)
-}
-
 /// Confirmed artifacts of one repo, before sizing.
 struct RepoArtifacts {
     repo: PathBuf,
     paths: Vec<PathBuf>,
     activity_secs: f64,
+    /// `git status` failed for a dormant-looking repo: we can't vouch it's idle.
+    status_failed: bool,
+}
+
+/// Newest mtime of the files `git status` reports as changed or untracked
+/// (0 if none). `None` if `git status` failed.
+fn worktree_changes_secs(git: &Git, repo: &Path) -> Option<f64> {
+    let out = git.run(
+        repo,
+        [
+            "status",
+            "--porcelain",
+            "-z",
+            "--untracked-files=normal",
+            "--ignore-submodules=none",
+        ],
+    );
+    if !out.success {
+        return None;
+    }
+    let mut newest = 0.0f64;
+    let mut entries = out.stdout.split(|b| *b == 0).filter(|e| !e.is_empty());
+    while let Some(e) = entries.next() {
+        if e.len() < 4 {
+            continue;
+        }
+        let (xy, path) = (&e[..2], &e[3..]);
+        // Renames and copies carry the original path as the next entry.
+        if xy.contains(&b'R') || xy.contains(&b'C') {
+            entries.next();
+        }
+        let rel = Path::new(std::ffi::OsStr::from_bytes(path));
+        let rel = rel.strip_suffix_slash();
+        newest = newest.max(mtime_secs_nofollow(&repo.join(rel)));
+    }
+    Some(newest)
+}
+
+/// mtime without following symlinks; 0 if unreadable (e.g. a deleted file).
+fn mtime_secs_nofollow(p: &Path) -> f64 {
+    match fs::symlink_metadata(p) {
+        Ok(m) if m.file_type().is_symlink() => m
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0.0, |d| d.as_secs_f64()),
+        Ok(_) => mtime_secs(p),
+        Err(_) => 0.0,
+    }
+}
+
+trait StripSlash {
+    fn strip_suffix_slash(&self) -> &Path;
+}
+
+impl StripSlash for Path {
+    /// `dir/` (untracked folder) -> `dir`.
+    fn strip_suffix_slash(&self) -> &Path {
+        let b = self.as_os_str().as_bytes();
+        match b.strip_suffix(b"/") {
+            Some(t) => Path::new(std::ffi::OsStr::from_bytes(t)),
+            None => self,
+        }
+    }
 }
 
 /// Ignore-check, date and size the candidates of every main repo.
@@ -366,7 +554,9 @@ fn analyze_repos(
     stamps: &BTreeMap<PathBuf, f64>,
     repo_roots: &BTreeSet<PathBuf>,
     opts: &ScanOptions,
+    reporter: &Reporter<'_>,
 ) -> (Vec<Project>, u64) {
+    let threshold = i64::try_from(opts.dormant_after_days).unwrap_or(i64::MAX);
     let confirmed: Vec<RepoArtifacts> = git.pool().install(|| {
         by_repo
             .par_iter()
@@ -379,17 +569,21 @@ fn analyze_repos(
                 if paths.is_empty() {
                     return None;
                 }
-                let mut activity_secs = stamps.get(repo).copied().unwrap_or(0.0);
-                let log = git.run(repo, ["log", "-1", "--format=%ct"]);
-                if log.success {
-                    if let Ok(ct) = log.text().parse::<u64>() {
-                        activity_secs = activity_secs.max(ct as f64);
+                let stamp = stamps.get(repo).copied().unwrap_or(0.0);
+                let mut activity = activity_secs(git, repo, stamp);
+                let mut status_failed = false;
+                // Only a dormant-looking repo needs the (costlier) dirty check.
+                if matches!(idle(activity, opts.now).0, Some(d) if d >= threshold) {
+                    match worktree_changes_secs(git, repo) {
+                        Some(changed) => activity = activity.max(changed),
+                        None => status_failed = true,
                     }
                 }
                 Some(RepoArtifacts {
                     repo: repo.clone(),
                     paths,
-                    activity_secs,
+                    activity_secs: activity,
+                    status_failed,
                 })
             })
             .collect()
@@ -408,19 +602,26 @@ fn analyze_repos(
         Some(s)
     };
     let mut lost = 0u64;
+    // Sequential in path order (each folder is measured in parallel inside),
+    // so the project credited with a shared hard link is deterministic.
     let projects: Vec<Project> = confirmed
-        .par_iter()
+        .iter()
         .map(|r| {
             let arts = r
                 .paths
-                .par_iter()
+                .iter()
                 .map(|p| {
-                    let size = sizer_for(p).map_or(0, |s| s.size_of(p));
-                    artifact(p.clone(), size)
+                    let (size, has_git) = sizer_for(p).map_or((0, false), |s| measure(&s, p));
+                    reporter.tick();
+                    artifact(p.clone(), size, has_git)
                 })
                 .collect();
             let (idle_days, last_activity) = idle(r.activity_secs, opts.now);
-            let (status, reason) = classify(idle_days, opts.dormant_after_days);
+            let (status, reason) = if r.status_failed {
+                (Status::Review, "could not read git status".to_string())
+            } else {
+                classify(idle_days, opts.dormant_after_days)
+            };
             Project {
                 path: r.repo.clone(),
                 kind: ProjectKind::Repo,
@@ -442,12 +643,30 @@ fn analyze_repos(
     (projects, lost)
 }
 
-/// Drop paths nested inside another path of the set (sorted output).
+/// Allocated size of `dir`, and whether a `.git` folder exists anywhere inside.
+fn measure(sizer: &Sizer, dir: &Path) -> (u64, bool) {
+    let has_git = AtomicBool::new(false);
+    let size = sizer
+        .measure_split(dir, &|_, name, _| {
+            if name == ".git" {
+                has_git.store(true, Ordering::Relaxed);
+                Split::InlineNoSplit
+            } else {
+                Split::Inline
+            }
+        })
+        .total;
+    (size, has_git.into_inner())
+}
+
+/// Drop paths nested inside another path of the set (sorted output). After
+/// sorting, a path's descendants follow it directly, so checking the last kept
+/// path is enough.
 fn outermost(mut paths: Vec<PathBuf>) -> Vec<PathBuf> {
     paths.sort();
     let mut out: Vec<PathBuf> = Vec::with_capacity(paths.len());
     for p in paths {
-        if !out.iter().any(|o| p.starts_with(o)) {
+        if !out.last().is_some_and(|o| p.starts_with(o)) {
             out.push(p);
         }
     }
@@ -460,20 +679,6 @@ fn contains_repo(repo_roots: &BTreeSet<PathBuf>, dir: &Path) -> bool {
         .range(dir.to_path_buf()..)
         .next()
         .is_some_and(|r| r.starts_with(dir))
-}
-
-fn idle(activity_secs: f64, now: SystemTime) -> (Option<i64>, Option<SystemTime>) {
-    if activity_secs <= 0.0 {
-        return (None, None);
-    }
-    let now_secs = now
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0);
-    (
-        Some(((now_secs - activity_secs) / DAY).floor() as i64),
-        Some(UNIX_EPOCH + Duration::from_secs_f64(activity_secs)),
-    )
 }
 
 /// Ignored artifacts are regenerable, so the only question is whether the
