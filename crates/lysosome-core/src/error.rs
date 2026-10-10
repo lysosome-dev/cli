@@ -15,7 +15,7 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[non_exhaustive]
 pub enum Error {
     /// The `git` binary could not be executed.
-    #[error("could not run `git`: {0}. Install git (e.g. `xcode-select --install`) and make sure it is on PATH")]
+    #[error("could not run `git`: {0}")]
     GitUnavailable(#[source] std::io::Error),
 
     /// None of the requested scan roots exist or are folders.
@@ -23,7 +23,7 @@ pub enum Error {
     NoValidRoots(Vec<PathBuf>),
 
     /// The home directory could not be determined (needed for the default root).
-    #[error("could not determine your home directory; pass the folders to scan explicitly")]
+    #[error("could not determine your home directory")]
     NoHomeDir,
 
     /// A rayon thread pool could not be created.
@@ -41,6 +41,38 @@ pub enum Error {
         #[source]
         source: std::io::Error,
     },
+}
+
+impl Error {
+    /// How to fix it, for people (the CLI prints it as `hint:`).
+    pub fn hint(&self) -> &'static str {
+        match self {
+            Error::GitUnavailable(_) => {
+                "install git (`xcode-select --install` on macOS) and make sure it is on PATH"
+            }
+            Error::NoValidRoots(_) => {
+                "check the spelling, or pass a folder that exists, e.g. `lysosome scan ~/code`"
+            }
+            Error::NoHomeDir => "set HOME to your home folder and try again",
+            Error::ThreadPool(_) => {
+                "the system is out of threads or memory; close some programs and try again"
+            }
+            Error::Shared(inner) => inner.hint(),
+            Error::Io { .. } => "check that the path exists and that you can read it",
+        }
+    }
+
+    /// A stable machine-readable name (`--json` errors' `code`).
+    pub fn code(&self) -> &'static str {
+        match self {
+            Error::GitUnavailable(_) => "git_unavailable",
+            Error::NoValidRoots(_) => "no_valid_roots",
+            Error::NoHomeDir => "no_home_dir",
+            Error::ThreadPool(_) => "thread_pool",
+            Error::Shared(inner) => inner.code(),
+            Error::Io { .. } => "io",
+        }
+    }
 }
 
 fn display_paths(paths: &[PathBuf]) -> String {

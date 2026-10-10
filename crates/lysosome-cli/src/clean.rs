@@ -11,7 +11,7 @@ use std::io::{BufRead, IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{bail, Context, Result};
+use anyhow::Result;
 use clap::{Args, ValueEnum};
 use lysosome_core::clean::{
     self, ActionKind, ActionLog, DirTrash, Executor, ItemResult, Outcome, Plan, PlanItem,
@@ -25,6 +25,7 @@ use lysosome_core::system;
 use owo_colors::Style;
 use serde_json::{json, Value};
 
+use crate::errors;
 use crate::pick;
 use crate::progress::Spinner;
 use crate::ui::{self, human_bytes, pad_left, pad_right, plural, Painter, PathShortener};
@@ -146,13 +147,18 @@ fn selection(args: &CleanArgs) -> Selection {
 
 pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
     if args.permanent && !args.yes {
-        bail!("--permanent deletes for good, so it needs --yes as well (it is never the default)");
+        return Err(errors::fail(
+            "needs_yes",
+            "--permanent deletes for good, so it needs --yes as well (it is never the default)",
+            "add --yes to delete permanently, or drop --permanent to use the Trash",
+        ));
     }
     if args.interactive && !(std::io::stdin().is_terminal() && ui::stderr_is_tty()) {
-        bail!(
-            "--interactive needs a terminal (stdin and stderr must be a TTY); \
-             run `lysosome clean` without -i for a dry run, then pick items with --only"
-        );
+        return Err(errors::fail(
+            "needs_terminal",
+            "--interactive needs a terminal (stdin and stderr must be a TTY)",
+            "run `lysosome clean` without -i for a dry run, then pick items with --only",
+        ));
     }
     let home = dirs::home_dir().ok_or(lysosome_core::Error::NoHomeDir)?;
     let shortener = PathShortener::new(Some(home.clone()));
@@ -207,9 +213,13 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
     }
     if scan.all_failed() {
         let err = scan.runs.iter_mut().find_map(|r| r.error.take());
-        return Err(err
-            .map(anyhow::Error::from)
-            .unwrap_or_else(|| anyhow::anyhow!("every detector failed")));
+        return Err(err.map(anyhow::Error::from).unwrap_or_else(|| {
+            errors::fail(
+                "all_detectors_failed",
+                "every detector failed",
+                "check that the folders exist and that `git --version` works; `lysosome caches` checks the machine-wide part on its own",
+            )
+        }));
     }
     for r in &scan.runs {
         if let Some(e) = &r.error {
@@ -276,7 +286,13 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
             });
         }
         let picker = pick::Picker::new(&plan, &held, &shortener, &sel);
-        let Some(picked) = pick::run(picker, &warn).context("the interactive picker failed")?
+        let Some(picked) = pick::run(picker, &warn).map_err(|e| {
+            errors::fail(
+                "picker",
+                format!("the interactive picker failed: {e}"),
+                "run without -i and choose items with --only",
+            )
+        })?
         else {
             return Ok(nothing_changed(""));
         };
@@ -328,10 +344,14 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
             .map(PathBuf::from)
             .as_deref(),
     );
-    let log = ActionLog::open(&log_path).with_context(|| {
-        format!(
-            "could not open the action log {}; nothing was changed",
-            log_path.display()
+    let log = ActionLog::open(&log_path).map_err(|e| {
+        errors::fail(
+            "action_log",
+            format!(
+                "could not open the action log {}: {e}; nothing was changed",
+                log_path.display()
+            ),
+            "make sure that folder is writable (or set XDG_STATE_HOME to another folder)",
         )
     })?;
     let dir_trash = std::env::var_os("LYSOSOME_TRASH_DIR")

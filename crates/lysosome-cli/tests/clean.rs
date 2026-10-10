@@ -956,8 +956,9 @@ fn interactive_needs_a_terminal_and_rejects_json() {
     assert!(err.contains("--interactive needs a terminal"), "{err}");
     assert!(err.contains("without -i"), "suggests a fix: {err}");
     let out = fx.run(&["clean", &fx.s("code"), "-i", "--json"]);
-    assert!(!out.status.success());
-    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2));
+    // With --json the clap error is a JSON document on stdout.
+    let err = String::from_utf8_lossy(&out.stdout);
     assert!(
         err.contains("cannot be used with"),
         "a clap conflict: {err}"

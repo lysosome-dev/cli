@@ -72,9 +72,13 @@ pub fn run(cmd: &ScanCmdArgs, global: &GlobalArgs) -> Result<String> {
 
     if run.all_failed() || run.project_detectors_failed() {
         let err = run.runs.iter_mut().find_map(|r| r.error.take());
-        return Err(err
-            .map(anyhow::Error::from)
-            .unwrap_or_else(|| anyhow::anyhow!("every detector failed")));
+        return Err(err.map(anyhow::Error::from).unwrap_or_else(|| {
+            crate::errors::fail(
+                "all_detectors_failed",
+                "every detector failed",
+                "check that the folders exist and that `git --version` works; `lysosome caches` checks the machine-wide part on its own",
+            )
+        }));
     }
     let w = Style::new().yellow().bold();
     for r in &run.runs {

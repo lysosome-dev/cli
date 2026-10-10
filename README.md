@@ -277,7 +277,7 @@ lysosome clean --json                            # the plan as JSON (schema/clea
 
 ## JSON output
 
-`--json` prints a stable, versioned document (described by [`schema/lysosome.schema.json`](schema/lysosome.schema.json), JSON Schema 2020-12). Only additive changes happen within a `schema_version`. `lysosome clean --json` prints the plan, and with `--yes` each item's result, described by [`schema/clean.schema.json`](schema/clean.schema.json).
+`--json` prints a stable, versioned document (described by [`schema/lysosome.schema.json`](schema/lysosome.schema.json), JSON Schema 2020-12). Only additive changes happen within a `schema_version`. `lysosome clean --json` prints the plan, and with `--yes` each item's result, described by [`schema/clean.schema.json`](schema/clean.schema.json). If a command run with `--json` fails, stdout gets `{"error": {"code", "message", "hint"}}` instead (exit status 1, or 2 for a command-line mistake), described by [`schema/error.schema.json`](schema/error.schema.json). Without `--json`, every error comes with a `hint:` line saying how to fix it.
 
 ```json
 {
