@@ -772,3 +772,64 @@ fn a_pr_that_got_more_commits_after_head_still_covers_it_and_pushed_names_are_us
         gh.calls()
     );
 }
+
+#[test]
+fn bare_command_starts_with_a_quick_start() {
+    let out = Command::cargo_bin("lysosome").unwrap().output().unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    let first: Vec<&str> = text.lines().take(3).collect();
+    assert!(
+        first[0].starts_with("Try:") && first[0].contains("lysosome scan ~/code"),
+        "{text}"
+    );
+    assert!(first[1].contains("lysosome clean -i"), "{text}");
+    assert!(first[2].contains("lysosome caches"), "{text}");
+    assert!(text.contains("Usage:"), "help follows: {text}");
+}
+
+#[test]
+fn errors_suggest_a_fix_and_are_json_with_json() {
+    let schema: Value = serde_json::from_str(
+        &fs::read_to_string(repo_root().join("schema/error.schema.json")).unwrap(),
+    )
+    .unwrap();
+    let validator = jsonschema::draft202012::new(&schema).unwrap();
+    let t = tempfile::tempdir().unwrap();
+    let missing = t.path().join("nope");
+    let run = |args: &[&str]| {
+        Command::cargo_bin("lysosome")
+            .unwrap()
+            .env("NO_COLOR", "1")
+            .env("HOME", t.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let m = missing.to_str().unwrap();
+    // Text: message plus a hint on stderr, nothing on stdout.
+    let out = run(&["worktrees", m]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("error:") && err.contains("hint:"), "{err}");
+
+    for (args, code, status) in [
+        (vec!["worktrees", m, "--json"], "no_valid_roots", 1),
+        (
+            vec!["scan", m, "--no-system", "--json"],
+            "no_valid_roots",
+            1,
+        ),
+        (vec!["scan", "--json", "--bogus"], "usage", 2),
+        (vec!["clean", "--permanent", "--json"], "needs_yes", 1),
+    ] {
+        let out = run(&args);
+        assert_eq!(out.status.code(), Some(status), "{args:?}");
+        let doc: Value = serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|_| panic!("{args:?}: {}", String::from_utf8_lossy(&out.stdout)));
+        assert!(validator.is_valid(&doc), "{doc}");
+        assert_eq!(doc["error"]["code"], code, "{args:?}");
+        assert!(doc["error"]["hint"].as_str().is_some_and(|h| !h.is_empty()));
+    }
+}

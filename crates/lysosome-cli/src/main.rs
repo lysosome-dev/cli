@@ -3,6 +3,7 @@
 mod caches;
 mod clean;
 mod completions;
+mod errors;
 mod pick;
 mod progress;
 mod scan;
@@ -270,11 +271,17 @@ fn main() -> ExitCode {
     if let Some(code) = completions::generate_man_entry(Cli::command) {
         return code;
     }
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(c) => c,
+        Err(e) => return usage_error(e),
+    };
+    let json = cli.command.as_ref().is_some_and(Command::json);
     let mut failed = false;
     let result = match &cli.command {
         None => {
-            // Bare `lysosome`: concise help, success.
+            // Bare `lysosome`: a quick start, then the help; success.
+            let p = ui::Painter::new(ui::color_enabled(cli.global.no_color, ui::stdout_is_tty()));
+            print!("{}", quick_start(&p));
             let _ = Cli::command().print_help();
             return ExitCode::SUCCESS;
         }
@@ -311,12 +318,103 @@ fn main() -> ExitCode {
             }
         }
         Err(e) => {
-            let p = ui::Painter::new(ui::color_enabled(cli.global.no_color, ui::stderr_is_tty()));
-            eprintln!(
-                "{} {e:#}",
-                p.paint("error:", owo_colors::Style::new().red().bold())
-            );
+            let err = errors::describe(&e);
+            if json {
+                // Machine-readable on stdout (schema/error.schema.json).
+                let _ = std::io::stdout().write_all(errors::json(&err).as_bytes());
+            } else {
+                let p =
+                    ui::Painter::new(ui::color_enabled(cli.global.no_color, ui::stderr_is_tty()));
+                eprintln!(
+                    "{} {}",
+                    p.paint("error:", owo_colors::Style::new().red().bold()),
+                    err.message
+                );
+                if let Some(h) = &err.hint {
+                    eprintln!(
+                        "  {} {h}",
+                        p.paint("hint:", owo_colors::Style::new().cyan())
+                    );
+                }
+            }
             ExitCode::FAILURE
         }
     }
+}
+
+impl Command {
+    /// The command was asked for JSON output.
+    fn json(&self) -> bool {
+        match self {
+            Command::Scan(a) => a.common.json,
+            Command::Worktrees(a) => a.json,
+            Command::Caches(a) => a.json,
+            Command::Clean(a) => a.json,
+            Command::Completions(_) => false,
+        }
+    }
+}
+
+/// Three lines to get going, shown above the help of a bare `lysosome`.
+fn quick_start(p: &ui::Painter) -> String {
+    let rows = [
+        (
+            "lysosome scan ~/code",
+            "what's reclaimable under ~/code (read-only)",
+        ),
+        (
+            "lysosome clean -i ~/code",
+            "pick what to clean, then confirm",
+        ),
+        (
+            "lysosome caches",
+            "package caches, AI models, Docker, Xcode",
+        ),
+    ];
+    let mut o = String::new();
+    for (n, (cmd, what)) in rows.iter().enumerate() {
+        o.push_str(&format!(
+            "{}  {}  {}\n",
+            if n == 0 {
+                p.bold("Try:")
+            } else {
+                "    ".into()
+            },
+            p.paint(ui::pad_right(cmd, 25), owo_colors::Style::new().cyan()),
+            p.dim(what)
+        ));
+    }
+    o.push('\n');
+    o
+}
+
+/// A command-line mistake. With `--json` anywhere in the arguments the
+/// error is printed as JSON on stdout (exit 2); help and version requests
+/// print as usual.
+fn usage_error(e: clap::Error) -> ExitCode {
+    use clap::error::ErrorKind;
+    let wants_json = std::env::args_os().any(|a| a == "--json");
+    let informational = matches!(
+        e.kind(),
+        ErrorKind::DisplayHelp
+            | ErrorKind::DisplayVersion
+            | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+    );
+    if !wants_json || informational {
+        e.exit();
+    }
+    let text = e.render().to_string();
+    let message = text
+        .lines()
+        .next()
+        .unwrap_or("invalid arguments")
+        .trim_start_matches("error: ")
+        .to_string();
+    let err = errors::CliError {
+        code: "usage",
+        message,
+        hint: Some("run `lysosome help <command>` to see the options".into()),
+    };
+    let _ = std::io::stdout().write_all(errors::json(&err).as_bytes());
+    ExitCode::from(2)
 }

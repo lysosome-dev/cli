@@ -23,6 +23,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- First-run polish (#28): a bare `lysosome` starts with a three-line
+  "Try:" quick start above the help; every error carries a `hint:` with a
+  fix; with `--json`, errors are printed on stdout as
+  `{"error": {"code", "message", "hint"}}` with a non-zero exit
+  (`schema/error.schema.json`; exit 2 for command-line mistakes).
+
 - `lysosome clean -i` / `--interactive` (#16): pick what to clean in a
   terminal checklist grouped by category (size, tier badge, path). Items of
   the `--tier` tiers start ticked (cheap ones by default), costly ones are

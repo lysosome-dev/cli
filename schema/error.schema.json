@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/lysosome-dev/cli/schema/error.schema.json",
+  "title": "lysosome --json error",
+  "description": "Printed on stdout instead of the normal document when a command run with --json fails (exit status 1; 2 for a command-line mistake). Added in 0.3.0.",
+  "type": "object",
+  "required": ["schema_version", "tool_version", "error"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "tool_version": { "type": "string", "minLength": 1 },
+    "error": {
+      "type": "object",
+      "required": ["code", "message", "hint"],
+      "properties": {
+        "code": {
+          "description": "Stable machine-readable reason. Known values: usage, no_valid_roots, no_home_dir, git_unavailable, thread_pool, io, needs_yes, needs_terminal, all_detectors_failed, action_log, picker, internal. New codes may be added within a schema_version.",
+          "type": "string",
+          "minLength": 1
+        },
+        "message": { "description": "Human-readable description.", "type": "string", "minLength": 1 },
+        "hint": { "description": "How to fix it.", "type": ["string", "null"] }
+      }
+    }
+  }
+}
