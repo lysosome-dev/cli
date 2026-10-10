@@ -146,8 +146,11 @@ pub(super) fn runtimes(v: &Value) -> Vec<Item> {
     let Some(map) = v.as_object() else {
         return Vec::new();
     };
-    let mut items = Vec::new();
-    for rt in map.values() {
+    let mut items: Vec<Item> = Vec::new();
+    // Sorted by identifier so which entry wins a shared image is stable.
+    let mut rts: Vec<&Value> = map.values().collect();
+    rts.sort_by(|a, b| a["identifier"].as_str().cmp(&b["identifier"].as_str()));
+    for rt in rts {
         let Some(id) = rt["identifier"].as_str() else {
             continue;
         };
@@ -169,6 +172,27 @@ pub(super) fn runtimes(v: &Value) -> Vec<Item> {
             .or(rt["runtimeBundlePath"].as_str())
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(format!("simruntime://{id}")));
+        // Several runtime entries can share one disk image (seen with two
+        // iOS 26.4 entries): report it once, or its bytes count twice.
+        if let Some(first) = items.iter_mut().find(|i| i.path == path) {
+            // Deleting one entry wouldn't free a shared image (and could
+            // break the other): leave it to Xcode, as a review item.
+            let ids = first
+                .details
+                .entry("shared_with_runtime_ids")
+                .or_insert_with(|| Value::Array(Vec::new()));
+            if let Some(a) = ids.as_array_mut() {
+                a.push(Value::from(id));
+            }
+            first.command = None;
+            first.tier = Tier::Review;
+            first.reason =
+                "one disk image shared by several runtime entries; remove them in Xcode > Settings > Components"
+                    .into();
+            let used = rt["lastUsedAt"].as_str().and_then(parse_timestamp);
+            first.last_activity = first.last_activity.max(used);
+            continue;
+        }
         let deletable = rt["deletable"].as_bool().unwrap_or(false);
         let mut item = Item::new(
             "xcode-simulator-runtime",
@@ -200,6 +224,33 @@ mod tests {
     use crate::model::Status;
     use crate::system::testutil::{bare_env, by_kind, ctx, write};
     use serde_json::json;
+
+    #[test]
+    fn runtimes_sharing_one_image_are_reported_once() {
+        let v = json!({
+            "B": {"identifier": "B", "version": "26.4", "build": "23E244", "sizeBytes": 100,
+                  "path": "/S/img.dmg", "deletable": true, "runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime.iOS-26-4"},
+            "A": {"identifier": "A", "version": "26.4", "build": "23E244", "sizeBytes": 100,
+                  "path": "/S/img.dmg", "deletable": true, "runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime.iOS-26-4"},
+            "C": {"identifier": "C", "version": "18.0", "sizeBytes": 7,
+                  "path": "/S/other.dmg", "deletable": true}
+        });
+        let items = runtimes(&v);
+        assert_eq!(items.len(), 2);
+        let shared = items
+            .iter()
+            .find(|i| i.path == Path::new("/S/img.dmg"))
+            .unwrap();
+        assert_eq!(shared.details["runtime_id"], "A", "lowest id wins");
+        assert_eq!(shared.details["shared_with_runtime_ids"], json!(["B"]));
+        assert_eq!(shared.size, Some(100));
+        assert_eq!(
+            shared.tier,
+            Tier::Review,
+            "never delete one half of a shared image"
+        );
+        assert!(shared.command.is_none());
+    }
 
     #[test]
     fn finds_deriveddata_devicesupport_and_archives() {
