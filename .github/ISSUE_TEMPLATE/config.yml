@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/lysosome-dev/cli/discussions
+    about: Ask how something works, share results, or float an idea before filing it.
+  - name: Report a security or safety issue
+    url: https://github.com/lysosome-dev/cli/security/advisories/new
+    about: Something deleted or labelled REMOVABLE that shouldn't be? Report it privately here, not as a public issue.
