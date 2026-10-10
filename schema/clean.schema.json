@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/lysosome-dev/cli/schema/clean.schema.json",
+  "title": "lysosome clean plan / result",
+  "description": "Output of `lysosome clean --json`. Without --yes it is the plan (mode dry_run, every result null); with --yes it adds a result per item (mode execute). Versioned by schema_version; only additive changes happen within a major version, so consumers must ignore unknown properties.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "tool_version",
+    "mode",
+    "permanent",
+    "scanned_roots",
+    "dormant_after_days",
+    "selection",
+    "items",
+    "excluded",
+    "summary",
+    "log_path"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "tool_version": { "type": "string", "minLength": 1 },
+    "mode": {
+      "description": "dry_run: nothing was changed. execute: every item was re-checked and acted on (see each result).",
+      "enum": ["dry_run", "execute"]
+    },
+    "permanent": {
+      "description": "true when trash actions were replaced by permanent deletion (--permanent --yes).",
+      "type": "boolean"
+    },
+    "scanned_roots": {
+      "description": "Canonical folders scanned for worktrees and project artifacts (empty for --caches only).",
+      "type": "array",
+      "items": { "$ref": "#/$defs/path" }
+    },
+    "dormant_after_days": { "type": "integer", "minimum": 0 },
+    "selection": { "$ref": "#/$defs/selection" },
+    "items": {
+      "description": "Planned actions, in execution order.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/item" }
+    },
+    "excluded": { "$ref": "#/$defs/excluded" },
+    "summary": { "$ref": "#/$defs/summary" },
+    "log_path": {
+      "description": "The action log entries were appended to (execute mode), else null.",
+      "oneOf": [{ "$ref": "#/$defs/path" }, { "type": "null" }]
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "mode": { "const": "dry_run" } } },
+      "then": {
+        "properties": {
+          "items": { "items": { "properties": { "result": { "type": "null" } } } },
+          "log_path": { "type": "null" }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "path": { "type": "string", "minLength": 1 },
+    "bytes": { "type": "integer", "minimum": 0 },
+    "tier": { "enum": ["regenerable", "regenerable_expensive", "review"] },
+    "category": {
+      "enum": ["worktrees", "artifacts", "ai_models", "xcode", "package_caches", "containers", "editors", "android"]
+    },
+    "count": {
+      "type": "object",
+      "required": ["items", "bytes"],
+      "properties": {
+        "items": { "type": "integer", "minimum": 0 },
+        "bytes": { "$ref": "#/$defs/bytes" }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "required": ["scopes", "tiers", "older_than_days", "only", "strip_artifacts"],
+      "properties": {
+        "scopes": {
+          "type": "array",
+          "items": { "enum": ["worktrees", "artifacts", "caches"] }
+        },
+        "tiers": {
+          "description": "Tiers that may be cleaned. Never contains review.",
+          "type": "array",
+          "items": { "enum": ["regenerable", "regenerable_expensive"] }
+        },
+        "older_than_days": { "type": ["integer", "null"], "minimum": 0 },
+        "only": { "type": "array", "items": { "type": "string" } },
+        "strip_artifacts": { "type": "boolean" }
+      }
+    },
+    "item": {
+      "type": "object",
+      "required": ["id", "category", "kind", "name", "path", "size_bytes", "tier", "status", "reason", "action", "result"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "category": { "$ref": "#/$defs/category" },
+        "kind": { "type": "string" },
+        "name": { "type": "string" },
+        "path": {
+          "description": "The finding's path (may be a pseudo-path such as docker://image/<id> for command items).",
+          "$ref": "#/$defs/path"
+        },
+        "project": {
+          "description": "Project or worktree holding an artifact folder.",
+          "$ref": "#/$defs/path"
+        },
+        "size_bytes": { "$ref": "#/$defs/bytes" },
+        "size_is_upper_bound": { "const": true },
+        "tier": {
+          "description": "Never review.",
+          "enum": ["regenerable", "regenerable_expensive"]
+        },
+        "status": {
+          "description": "REMOVABLE, or REVIEW only for an artifact folder stripped from a REVIEW worktree (--strip-artifacts). Never ACTIVE or ORPHAN.",
+          "enum": ["REMOVABLE", "REVIEW"]
+        },
+        "reason": { "type": "string" },
+        "action": {
+          "description": "worktree_remove: `git worktree remove` (no --force) then `git worktree prune`. command: run `command` (argv, no shell). trash: move `paths` to the Trash. delete: delete `paths` permanently.",
+          "enum": ["worktree_remove", "command", "trash", "delete"]
+        },
+        "command": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "paths": { "type": "array", "items": { "$ref": "#/$defs/path" }, "minItems": 1 },
+        "result": { "oneOf": [{ "$ref": "#/$defs/result" }, { "type": "null" }] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "action": { "enum": ["worktree_remove", "command"] } } },
+          "then": { "required": ["command"], "not": { "required": ["paths"] } }
+        },
+        {
+          "if": { "properties": { "action": { "enum": ["trash", "delete"] } } },
+          "then": { "required": ["paths"], "not": { "required": ["command"] } }
+        },
+        {
+          "if": { "properties": { "status": { "const": "REVIEW" } } },
+          "then": { "properties": { "category": { "const": "worktrees" }, "action": { "enum": ["trash", "delete"] } }, "required": ["project"] }
+        }
+      ]
+    },
+    "result": {
+      "type": "object",
+      "required": ["outcome", "freed_bytes", "destination", "message"],
+      "properties": {
+        "outcome": {
+          "description": "done: removed / command succeeded. skipped: not touched because something changed since the scan (or it was already gone). failed: tried and failed.",
+          "enum": ["done", "skipped", "failed"]
+        },
+        "freed_bytes": { "$ref": "#/$defs/bytes" },
+        "destination": {
+          "description": "Where it went: Trash, a LYSOSOME_TRASH_DIR path, deleted permanently, git worktree remove, command.",
+          "type": ["string", "null"]
+        },
+        "message": { "type": "string" }
+      }
+    },
+    "excluded": {
+      "description": "Dormant findings in the selected scopes that were left out, by reason.",
+      "type": "object",
+      "required": ["review", "orphan", "tier", "older_than", "only", "nothing_to_do"],
+      "properties": {
+        "review": { "$ref": "#/$defs/count" },
+        "orphan": { "$ref": "#/$defs/count" },
+        "tier": { "$ref": "#/$defs/count" },
+        "older_than": { "$ref": "#/$defs/count" },
+        "only": { "$ref": "#/$defs/count" },
+        "nothing_to_do": { "$ref": "#/$defs/count" }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["planned_items", "planned_bytes", "done", "skipped", "failed", "freed_bytes"],
+      "properties": {
+        "planned_items": { "type": "integer", "minimum": 0 },
+        "planned_bytes": { "$ref": "#/$defs/bytes" },
+        "done": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "freed_bytes": { "$ref": "#/$defs/bytes" }
+      }
+    }
+  }
+}

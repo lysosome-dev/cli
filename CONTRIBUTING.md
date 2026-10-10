@@ -23,8 +23,9 @@ CI runs fmt, clippy and tests on macOS and Linux; all three must pass.
   data and **never prints**.
 - `crates/lysosome-cli`: the `lysosome` binary: arguments, table and JSON
   output, progress (stderr only), completions.
-- `schema/lysosome.schema.json`: the versioned `--json` contract. Changes
-  within a `schema_version` must be additive.
+- `schema/lysosome.schema.json`: the versioned `--json` contract, and
+  `schema/clean.schema.json` for `lysosome clean --json`. Changes within a
+  `schema_version` must be additive.
 - `reference/wtscan.py`: the Python prototype; the source of truth for
   worktree classification. Not shipped.
 - `tests/fixtures/`: scripts that build fake repos and caches for tests.
@@ -53,6 +54,11 @@ These are release blockers (full text in the [README](README.md#safety-rules)):
 - The read-only test snapshots every file's mtime and hash before and after a
   scan. Keep it passing.
 - Permission-denied folders are skipped and counted, never fatal.
+- `clean` tests set `LYSOSOME_TRASH_DIR` so nothing lands in your real
+  Trash. The one test that uses the real system Trash only runs with
+  `LYSOSOME_TEST_REAL_TRASH=1` (then remove the test folder from the Trash).
+- Never run `lysosome clean --yes` against your real home folder while
+  developing; use fixtures.
 - macOS-only code goes behind `cfg(target_os = "macos")`; Linux must still build.
 
 ## Pull requests

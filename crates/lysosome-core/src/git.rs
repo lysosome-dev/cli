@@ -23,7 +23,7 @@ use wait_timeout::ChildExt;
 use crate::error::{Error, Result};
 
 /// Environment variables that point git at a specific repository; always cleared.
-const REPO_ENV_VARS: &[&str] = &[
+pub(crate) const REPO_ENV_VARS: &[&str] = &[
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",

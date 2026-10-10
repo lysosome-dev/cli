@@ -694,7 +694,7 @@ fn analyze_repos(
 }
 
 /// Allocated size of `dir`, and whether a `.git` folder exists anywhere inside.
-fn measure(sizer: &Sizer, dir: &Path) -> (u64, bool) {
+pub(crate) fn measure(sizer: &Sizer, dir: &Path) -> (u64, bool) {
     let has_git = AtomicBool::new(false);
     let size = sizer
         .measure_split(dir, &|_, name, _| {
@@ -729,6 +729,28 @@ fn contains_repo(repo_roots: &BTreeSet<PathBuf>, dir: &Path) -> bool {
         .range(dir.to_path_buf()..)
         .next()
         .is_some_and(|r| r.starts_with(dir))
+}
+
+/// Re-derive a main repository's status with the scan's rules (used by
+/// `clean` right before acting). Unlike the scan, the dirty check always runs,
+/// so edits made since the scan count as activity.
+pub(crate) fn repo_status(
+    git: &Git,
+    repo: &Path,
+    now: SystemTime,
+    dormant_after_days: u64,
+) -> (Status, String) {
+    // Safety rule 2: timestamps before any git process.
+    let stamp = git_stamp_secs(&repo.join(".git"));
+    let mut activity = activity_secs(git, repo, stamp);
+    let now_secs = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64());
+    match worktree_changes_secs(git, repo) {
+        Some(changed) => activity = activity.max(changed.min(now_secs)),
+        None => return (Status::Review, "could not read git status".into()),
+    }
+    classify(idle(activity, now).0, dormant_after_days)
 }
 
 /// Ignored artifacts are regenerable, so the only question is whether the

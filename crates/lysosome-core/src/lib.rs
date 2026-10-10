@@ -5,6 +5,7 @@
 //! * [`git`] — bounded, timeout-guarded, lock-free `git` subprocesses.
 //! * [`size`] — allocated-size measurement with hard-link de-duplication.
 //! * [`system`] — Milestone 3: caches, AI models, Docker, Xcode, Android, editors.
+//! * [`clean`] — Milestone 4: plan, re-check and perform safe cleanup.
 //! * [`artifacts`] — artifact folder names and the `git check-ignore` gate.
 //! * [`worktree`] — Milestone 1: worktree discovery, analysis, classification.
 //! * [`projects`] — Milestone 2: project artifacts + worktrees from one shared walk.
@@ -15,6 +16,7 @@
 //! * [`error`] — the crate error type.
 
 pub mod artifacts;
+pub mod clean;
 pub mod detector;
 pub mod detectors;
 pub mod error;

@@ -8,9 +8,9 @@
 
 Claude Code, Cursor and parallel agents create git worktrees constantly, and nothing cleans them up. Each dormant worktree drags its own `node_modules`, `target` or `.venv`. Add build artifacts, package caches, local AI models, Docker and Xcode data, and your SSD fills up fast.
 
-`lysosome` shows you where the disk went, labels every item by how safe it is to delete, and (soon) cleans it up safely.
+`lysosome` shows you where the disk went, labels every item by how safe it is to delete, and cleans it up safely: dry run by default, the Trash by default, and every item re-checked right before it's touched.
 
-> 🚧 Under active development. `lysosome scan` (idle project artifacts, dormant worktrees, plus everything `lysosome caches` finds: package caches, AI models, Docker, Xcode) is here; safe cleanup is next. See [docs/SPEC.md](docs/SPEC.md).
+> 🚧 Under active development. `lysosome scan` (idle project artifacts, dormant worktrees, plus everything `lysosome caches` finds: package caches, AI models, Docker, Xcode) and `lysosome clean` are here. See [docs/SPEC.md](docs/SPEC.md).
 
 <p align="center"><img src="docs/assets/worktrees.svg" alt="lysosome worktrees: dormant worktrees grouped by how safe they are to remove" width="860"></p>
 
@@ -184,9 +184,68 @@ lysosome caches --json                   # same versioned JSON contract
 
 Tiers: **cache** (`regenerable`) is refilled on demand; **costly** (`regenerable_expensive`) can be re-downloaded but it takes time and bandwidth, and the JSON includes `details.redownload_bytes`; **review** may hold something you can't rebuild. Every finding names the tool's own cleanup command where one exists (`npm cache clean --force`, `brew cleanup -s`, `go clean -modcache`, `docker builder prune --force`, `xcrun simctl delete unavailable`, `ollama rm <model>`), otherwise the folder to move to the Trash.
 
+## Clean up safely
+
+```bash
+lysosome clean                                   # dry run: what would be cleaned, and the total
+lysosome clean --yes                             # do it (cheap-to-rebuild items only)
+lysosome clean ~/code --worktrees --yes          # just dormant, removable worktrees
+lysosome clean --artifacts --tier regenerable_expensive   # include node_modules, .venv, Pods...
+lysosome clean --strip-artifacts --tier regenerable_expensive ~/.worktrees
+                                                 # free node_modules/target inside dormant
+                                                 # worktrees, keep the worktrees themselves
+lysosome clean --caches --only 'npm*' --yes      # one cache (id, kind, name or path; globs ok)
+lysosome clean --older-than 90d                  # only items idle 90+ days
+lysosome clean --json                            # the plan as JSON (schema/clean.schema.json)
+```
+
+```text
+  Dry run. Nothing will be changed.
+
+  ── Git worktrees  43 items · 3.8 GB
+    each: git -C <main repo> worktree remove <path> (no --force), then git worktree prune; branches are kept
+    cheap    960 MB  remove worktree  ~/code/app-worktrees/refactored-marinating-stream
+    …
+  ── Xcode  4 items · 18.7 GB
+    cheap    4.5 GB  move to Trash    ~/Library/Developer/Xcode/DerivedData
+  ── Package caches  13 items · 20.0 GB
+    cheap    6.0 GB  run              npm cache clean --force
+    cheap   ≤3.1 GB  run              pnpm store prune
+
+  Would reclaim up to 49.5 GB (206 items) · files go to the Trash
+  Held back: 155 GB costly to get back (add --tier regenerable_expensive) · 12 REVIEW items (13.6 GB) need review and are never cleaned
+
+  Run again with --yes to do it.
+```
+
+**What it does.** Only `REMOVABLE` items are ever cleaned:
+
+| Group (flag) | How |
+|---|---|
+| Worktrees (`--worktrees`) | `git -C <main repo> worktree remove <path>` (never `--force`, never `rm`), then `git worktree prune`. The branch is kept. |
+| Project artifacts (`--artifacts`) | git-ignored folders of idle projects are moved to the Trash. |
+| Caches (`--caches`) | the tool's own cleanup command (`npm cache clean --force`, `docker builder prune --force`, `brew cleanup -s`, `xcrun simctl delete unavailable`, `go clean -modcache`...), run without a shell and with a timeout; otherwise the folder is moved to the Trash. |
+| `--strip-artifacts` | keeps dormant worktrees (`REVIEW` ones too: dirty, unpushed, locked) and moves only their git-ignored artifact folders to the Trash. |
+
+**Defaults.** With no group flag, all three groups, but only tier `regenerable` (cheap to rebuild). `--tier regenerable_expensive` adds dependencies, AI models, Docker images and simulators. Tier `review` is never cleaned, and neither are `REVIEW`, `ACTIVE` or `ORPHAN` items.
+
+**Safety guarantees.**
+
+- **Dry run by default.** Nothing changes without `--yes`. On a terminal, `clean` shows the plan and asks `Proceed? [y/N]` (default no); piped or with `--json`, it's a dry run unless `--yes` is given.
+- **Re-checked right before acting.** The scan may be minutes old. Each worktree is analyzed again (dirty, untracked files, locked, unpushed, merged, idle) and must still be `REMOVABLE`; each artifact folder must still exist, not be a symlink, still be ignored by `git check-ignore`, hold no `.git`, and its project must still be idle; each Trash path must still exist, not be a symlink and sit in the same folder. An artifact that now sits inside a nested repository is skipped, and a worktree is kept if anything inside it is a nested checkout (a submodule, a clone in an ignored folder), can't be read, or is another mounted filesystem. Anything that changed is skipped with the reason (`2 skipped: changed since scan`).
+- **Fail closed.** A folder about to go is walked first: anything holding a `.git` (folder or file), a folder that can't be read, or another filesystem mounted inside is skipped. Folders with files tracked by git are skipped too.
+- **Nothing precious leaves with a worktree.** `git worktree remove` deletes ignored files outright, so ignored files that aren't build output (`.env`, local databases, editor settings) are moved to the Trash first.
+- **Recoverable.** Files go to the macOS Trash (the freedesktop.org trash on Linux). `--permanent` deletes instead, only together with `--yes`, never follows symlinks and never crosses into another mounted filesystem.
+- **Never your home folder.** Your home folder, anything above it and top-level system folders are refused whatever a finding says.
+- **Logged.** Each item gets an `attempt` line before anything happens and an outcome line after (done, skipped, failed), as JSON lines in `~/Library/Logs/lysosome/actions.log` on macOS (`$XDG_STATE_HOME/lysosome/actions.log`, default `~/.local/state/lysosome/actions.log`, on Linux): time, action, target, size, outcome, and where it went.
+- **Ctrl-C is safe.** The current item finishes and is logged, then `clean` stops; a second Ctrl-C quits at once.
+- **One failure doesn't stop the rest.** A failing cleanup command is reported for that item; `clean` exits with status 1 if anything failed.
+
+`LYSOSOME_TRASH_DIR=/some/folder` makes "Trash" mean "move into that folder" (same filesystem only), for sandboxes and tests.
+
 ## JSON output
 
-`--json` prints a stable, versioned document (described by [`schema/lysosome.schema.json`](schema/lysosome.schema.json), JSON Schema 2020-12). Only additive changes happen within a `schema_version`.
+`--json` prints a stable, versioned document (described by [`schema/lysosome.schema.json`](schema/lysosome.schema.json), JSON Schema 2020-12). Only additive changes happen within a `schema_version`. `lysosome clean --json` prints the plan, and with `--yes` each item's result, described by [`schema/clean.schema.json`](schema/clean.schema.json).
 
 ```json
 {
@@ -249,7 +308,7 @@ These are non-negotiable. Breaking any of them is a release-blocking bug.
 2. **Timestamps are read before git runs**, so git can never skew "last used".
 3. **Never remove or suggest removing a worktree** that has uncommitted changes or untracked files, is locked, or has commits that are neither merged into the default branch nor pushed.
 4. **A folder only counts as an artifact if git ignores it** (`git check-ignore`). Tracked source is never called junk.
-5. **Deletion (coming soon) goes to the macOS Trash by default**, uses each tool's own cleanup command (`git worktree remove`, `docker image prune`, `brew cleanup`, ...), and defaults to dry-run.
+5. **Deletion goes to the Trash by default**, uses each tool's own cleanup command (`git worktree remove`, `docker builder prune`, `brew cleanup`, ...), defaults to dry-run, and re-checks every item right before acting (see [Clean up safely](#clean-up-safely)).
 6. **Symlinks are never followed** during walks or size calculations.
 7. **When unsure, `REVIEW`**, never `REMOVABLE`.
 

@@ -188,7 +188,7 @@ pub(crate) fn is_linked_worktree_gitdir(gd: &Path) -> bool {
         .is_some_and(|n| n == "worktrees")
 }
 
-fn same_path(a: &Path, b: &Path) -> bool {
+pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
     a == b
         || match (a.canonicalize(), b.canonicalize()) {
             (Ok(x), Ok(y)) => x == y,

@@ -7,6 +7,43 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-10
+
+### Added
+
+- `lysosome clean [ROOTS...]`: safe cleanup. Dry run by default; `--yes` (or
+  `y` at the `Proceed? [y/N]` prompt on a terminal) acts. Only `REMOVABLE`
+  items are cleaned, never `REVIEW`, `ACTIVE` or `ORPHAN`, and never tier
+  `review`. Defaults to tier `regenerable`; `--tier regenerable_expensive`
+  adds dependencies, models and images.
+  - Worktrees: `git worktree remove` (never `--force`) then `git worktree
+    prune`; branches are kept. `--strip-artifacts` keeps dormant worktrees
+    (including `REVIEW` ones) and removes only their git-ignored artifact
+    folders.
+  - Caches: the tool's own cleanup command (no shell, with a timeout);
+    failures are reported per item and the exit status is 1.
+  - Everything else goes to the macOS Trash (freedesktop.org trash on
+    Linux); `--permanent` deletes instead and requires `--yes`.
+  - Every item is re-checked right before acting and skipped with a reason
+    if anything changed since the scan.
+  - Every outcome is appended to an action log
+    (`~/Library/Logs/lysosome/actions.log` on macOS,
+    `$XDG_STATE_HOME/lysosome/actions.log` on Linux).
+  - `--worktrees`, `--artifacts`, `--caches`, `--older-than 90d`,
+    `--only <id|glob>`, `--json` (`schema/clean.schema.json`).
+- `lysosome scan`: git-ignored build and dependency folders (`node_modules`,
+  `target`, `.venv`, `dist`, `.next`, `Pods`...) in every repository, dated by
+  the project's last activity, with a headline of how much idle projects hold.
+  Dependencies are `regenerable_expensive`, build output `regenerable`.
+- `lysosome caches` (alias `system`): package caches (npm, pnpm, Yarn, Bun,
+  pip, uv, conda, Cargo, Go, Gradle, Maven, Homebrew, CocoaPods), AI models
+  by name (Ollama, Hugging Face, LM Studio, torch, whisper), Docker images,
+  build cache and volumes, Xcode (DerivedData, device support, simulators,
+  archives), Android emulators and system images, editor caches. Each finding
+  names the tool's own cleanup command where one exists.
+- `lysosome scan` includes the cache, model, Docker and Xcode findings
+  (`--no-system` skips them).
+
 ## [0.1.0] - 2026-10-10
 
 First release.
@@ -29,5 +66,6 @@ First release.
   and a Homebrew tap (`brew install lysosome-dev/tap/lysosome`). Archives
   include man pages and shell completions.
 
-[Unreleased]: https://github.com/lysosome-dev/cli/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/lysosome-dev/cli/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/lysosome-dev/cli/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lysosome-dev/cli/releases/tag/v0.1.0
