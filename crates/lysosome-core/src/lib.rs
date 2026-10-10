@@ -1,6 +1,7 @@
-//! lysosome-core: finds the disk your dev tools left behind. Returns data; never prints.
+#![doc = include_str!("../README.md")]
 //!
-//! Module map:
+//! # Modules
+//!
 //! * [`walk`] — parallel, symlink-safe directory discovery with a visitor.
 //! * [`git`] — bounded, timeout-guarded, lock-free `git` subprocesses.
 //! * [`size`] — allocated-size measurement with hard-link de-duplication.
@@ -37,4 +38,5 @@ pub const TOOL_NAME: &str = "lysosome";
 /// Version of the JSON output contract (see `schema/`).
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// This crate's version (`CARGO_PKG_VERSION`), reported as `tool_version` in JSON output.
 pub const TOOL_VERSION: &str = env!("CARGO_PKG_VERSION");
