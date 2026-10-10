@@ -98,13 +98,15 @@ impl SystemEnv {
         self.var(key).map(PathBuf::from).filter(|p| p.is_absolute())
     }
 
-    /// Tool runner using this environment's `PATH` and the scan's home.
+    /// Tool runner using this environment (and nothing else from the process),
+    /// its `PATH` and the scan's home. See [`tools`] for the safety overrides.
     pub fn tools(&self, home: &Path) -> Tools {
         Tools::new(
             self.var("PATH").cloned(),
             Some(home.to_path_buf()),
             self.tool_timeout,
         )
+        .with_env(self.vars.iter().map(|(k, v)| (k.clone(), v.clone())))
     }
 
     /// `$XDG_CACHE_HOME`, else `~/.cache`.

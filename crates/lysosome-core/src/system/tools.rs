@@ -6,6 +6,17 @@
 //! * Every call has a timeout; a missing tool, a non-zero exit or a timeout all
 //!   come back as `None`. A slow or broken tool never fails a scan.
 //! * stdin is closed and stderr discarded: tools can never prompt.
+//! * Scanning never modifies anything (docs/SPEC.md §2.1), and that includes
+//!   what the tools we ask do on our behalf. Every call:
+//!   - starts from a cleared environment holding only the
+//!     [`SystemEnv`](super::SystemEnv) variables, then [`SCAN_ENV`] on top, which
+//!     turns off downloads, self-updates, auto-installs and bytecode writes;
+//!   - runs in `/`, so a project's `packageManager`, `go.mod` toolchain line or
+//!     `.tool-versions` in the current folder can't make a tool fetch itself;
+//!   - refuses programs that resolve into corepack: corepack's `pnpm` / `yarn`
+//!     shims download the real tool into `~/.cache/node/corepack` on first use,
+//!     so they are never run during a scan (callers fall back to well-known
+//!     paths).
 
 use std::ffi::{OsStr, OsString};
 use std::io::Read;
@@ -22,21 +33,78 @@ pub const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(10);
 /// up answers in milliseconds.
 pub const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// Spawns tool subprocesses with a fixed `PATH` and `HOME`.
+/// Variables set on every scan-time tool call, overriding the environment, so
+/// asking a tool where its cache lives can never make it download, update,
+/// install or write anything.
+pub const SCAN_ENV: &[(&str, &str)] = &[
+    // corepack (pnpm / yarn shims): no downloads, prompts or package.json pins.
+    ("COREPACK_ENABLE_NETWORK", "0"),
+    ("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0"),
+    ("COREPACK_ENABLE_AUTO_PIN", "0"),
+    ("COREPACK_ENABLE_STRICT", "0"),
+    // npm / pnpm: no update check, no self-download of a pinned pnpm version.
+    ("npm_config_update_notifier", "false"),
+    ("npm_config_manage_package_manager_versions", "false"),
+    ("pnpm_config_manage_package_manager_versions", "false"),
+    // Yarn: no self-update check (it records the time in ~/.yarnrc), no telemetry.
+    ("YARN_DISABLE_SELF_UPDATE_CHECK", "true"),
+    ("YARN_ENABLE_TELEMETRY", "0"),
+    // Homebrew: no auto-update, API download or analytics.
+    ("HOMEBREW_NO_AUTO_UPDATE", "1"),
+    ("HOMEBREW_NO_INSTALL_FROM_API", "1"),
+    ("HOMEBREW_NO_ANALYTICS", "1"),
+    ("HOMEBREW_NO_ENV_HINTS", "1"),
+    // pip / Python: no prompt, no version-check state file, no .pyc files.
+    ("PIP_NO_INPUT", "1"),
+    ("PIP_DISABLE_PIP_VERSION_CHECK", "1"),
+    ("PYTHONDONTWRITEBYTECODE", "1"),
+    // uv: never touch the network.
+    ("UV_OFFLINE", "1"),
+    // Go: never download a newer toolchain.
+    ("GOTOOLCHAIN", "local"),
+    // mise shims: never auto-install a missing tool version.
+    ("MISE_NOT_FOUND_AUTO_INSTALL", "false"),
+    // Docker CLI: no hints.
+    ("DOCKER_CLI_HINTS", "false"),
+];
+
+/// Spawns tool subprocesses with a fixed environment, `PATH` and `HOME`.
 #[derive(Debug, Clone)]
 pub struct Tools {
     path: Option<OsString>,
     home: Option<PathBuf>,
+    env: Vec<(OsString, OsString)>,
     timeout: Duration,
 }
 
 impl Tools {
+    /// A runner whose children see only `PATH`, `HOME` and [`SCAN_ENV`]; add
+    /// more variables with [`Tools::with_env`].
     pub fn new(path: Option<OsString>, home: Option<PathBuf>, timeout: Duration) -> Self {
         Tools {
             path,
             home,
+            env: Vec::new(),
             timeout,
         }
+    }
+
+    /// Base environment for children (`PATH`, `HOME` and [`SCAN_ENV`] still win).
+    pub fn with_env<K, V>(mut self, vars: impl IntoIterator<Item = (K, V)>) -> Self
+    where
+        K: Into<OsString>,
+        V: Into<OsString>,
+    {
+        self.env = vars
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect();
+        self
+    }
+
+    /// Whether `program` on our `PATH` is a corepack shim (and so is never run).
+    pub fn is_corepack_shim(&self, program: &str) -> bool {
+        self.which(program).is_some_and(|p| is_corepack_shim(&p))
     }
 
     /// Absolute path of `program` on our `PATH`, if it is an executable file.
@@ -69,6 +137,9 @@ impl Tools {
         S: AsRef<OsStr>,
     {
         let exe = self.which(program)?;
+        if is_corepack_shim(&exe) {
+            return None;
+        }
         let args: Vec<OsString> = args.into_iter().map(|a| a.as_ref().to_owned()).collect();
         let mut child = None;
         // A script written by another thread just before we fork can briefly
@@ -79,15 +150,19 @@ impl Tools {
             // programs they started (pyenv shims, `brew`'s ruby, node...).
             cmd.process_group(0);
             cmd.args(&args)
+                .current_dir("/")
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::null());
+                .stderr(Stdio::null())
+                .env_clear()
+                .envs(self.env.iter().map(|(k, v)| (k, v)));
             if let Some(p) = &self.path {
                 cmd.env("PATH", p);
             }
             if let Some(h) = &self.home {
                 cmd.env("HOME", h);
             }
+            cmd.envs(SCAN_ENV.iter().copied());
             match cmd.spawn() {
                 Ok(c) => {
                     child = Some(c);
@@ -168,6 +243,27 @@ fn kill_group(pid: u32) {
     }
 }
 
+/// Whether `exe` is (a link to) one of corepack's package-manager shims, or a
+/// wrapper script that hands off to corepack. Running one can download the
+/// real tool, so scans never do. Errs towards `true`: a false positive only
+/// means we use the well-known default location instead of asking.
+pub fn is_corepack_shim(exe: &Path) -> bool {
+    let resolved = std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
+    let in_corepack = |p: &Path| {
+        p.components()
+            .any(|c| c.as_os_str().to_string_lossy().contains("corepack"))
+    };
+    if in_corepack(&resolved) || in_corepack(exe) {
+        return true;
+    }
+    // A script shim (`exec corepack pnpm "$@"`, a Windows-style cmd shim...).
+    let mut head = Vec::with_capacity(4096);
+    if let Ok(f) = std::fs::File::open(&resolved) {
+        let _ = f.take(4096).read_to_end(&mut head);
+    }
+    head.starts_with(b"#!") && head.windows(8).any(|w| w == b"corepack")
+}
+
 fn is_executable(p: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
@@ -195,6 +291,93 @@ mod tests {
             start.elapsed() < Duration::from_secs(10),
             "{:?}",
             start.elapsed()
+        );
+    }
+
+    fn script(path: &Path, body: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn corepack_shims_are_never_run() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path();
+        let bin = root.join("bin");
+        let marker = root.join("corepack-ran");
+        // The layout `corepack enable` creates: bin/pnpm -> ../lib/node_modules/corepack/dist/pnpm.js
+        let shim = root.join("lib/node_modules/corepack/dist/pnpm.js");
+        script(
+            &shim,
+            &format!(
+                "#!/bin/sh\ntouch '{}'\necho {}\n",
+                marker.display(),
+                root.display()
+            ),
+        );
+        std::fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(
+            "../lib/node_modules/corepack/dist/pnpm.js",
+            bin.join("pnpm"),
+        )
+        .unwrap();
+        // A wrapper script handing off to corepack.
+        script(
+            &bin.join("yarn"),
+            &format!(
+                "#!/bin/sh\ntouch '{}'\nexec corepack yarn \"$@\"\n",
+                marker.display()
+            ),
+        );
+        // A real tool next to them still runs.
+        script(&bin.join("realtool"), "#!/bin/sh\necho ok\n");
+
+        let tools = Tools::new(
+            Some(bin.clone().into_os_string()),
+            None,
+            DEFAULT_TOOL_TIMEOUT,
+        );
+        assert!(tools.is_corepack_shim("pnpm"));
+        assert!(tools.is_corepack_shim("yarn"));
+        assert!(!tools.is_corepack_shim("realtool"));
+        assert!(tools.output("pnpm", ["store", "path"]).is_none());
+        assert!(tools.dir_output("pnpm", ["store", "path"]).is_none());
+        assert!(tools.output("yarn", ["cache", "dir"]).is_none());
+        assert!(!marker.exists(), "a corepack shim was run");
+        assert_eq!(tools.output("realtool", ["x"]).as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn tools_run_in_root_with_downloads_disabled_and_only_the_given_env() {
+        let t = tempfile::tempdir().unwrap();
+        let bin = t.path().join("bin");
+        script(&bin.join("envtool"), "#!/bin/sh\npwd\n/usr/bin/env\n");
+        let tools = Tools::new(
+            Some(bin.into_os_string()),
+            Some(t.path().join("home")),
+            DEFAULT_TOOL_TIMEOUT,
+        )
+        .with_env([
+            ("PNPM_HOME", "/somewhere"),
+            // The base environment can't turn the safety switches back on.
+            ("COREPACK_ENABLE_NETWORK", "1"),
+            ("GOTOOLCHAIN", "auto"),
+            ("HOME", "/not/the/scan/home"),
+        ]);
+        let out = tools.output("envtool", ["x"]).unwrap();
+        let mut lines = out.lines();
+        assert_eq!(lines.next(), Some("/"));
+        let vars: std::collections::HashMap<&str, &str> =
+            lines.filter_map(|l| l.split_once('=')).collect();
+        for (k, v) in SCAN_ENV {
+            assert_eq!(vars.get(k), Some(v), "{k}");
+        }
+        assert_eq!(vars["PNPM_HOME"], "/somewhere");
+        assert_eq!(vars["HOME"], t.path().join("home").to_str().unwrap());
+        assert!(
+            !vars.contains_key("CARGO_MANIFEST_DIR") && !vars.contains_key("CARGO_PKG_NAME"),
+            "the test process environment leaked: {vars:?}"
         );
     }
 }

@@ -65,13 +65,21 @@ fn npm(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
         .map(|p| item("npm-cache", p, "npm cache").command(["npm", "cache", "clean", "--force"])))
 }
 
+/// pnpm's store. Asks `pnpm store path` only when `pnpm` is a real install:
+/// corepack's shim would download pnpm first ([`Tools`] refuses to run it),
+/// so then we check pnpm's default store locations instead.
 fn pnpm(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
     let h = &ctx.home;
     let mut fallbacks = Vec::new();
     if let Some(p) = env.var_path("PNPM_HOME") {
         fallbacks.push(p.join("store"));
     }
-    fallbacks.push(h.join("Library/pnpm/store"));
+    if cfg!(target_os = "macos") {
+        fallbacks.push(h.join("Library/pnpm/store"));
+    }
+    if let Some(p) = env.var_path("XDG_DATA_HOME") {
+        fallbacks.push(p.join("pnpm/store"));
+    }
     fallbacks.push(h.join(".local/share/pnpm/store"));
     fallbacks.push(h.join(".pnpm-store"));
     one(
@@ -84,21 +92,25 @@ fn pnpm(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
     )
 }
 
+/// Yarn's cache, from `YARN_CACHE_FOLDER` or the default locations. Yarn is
+/// never asked: `yarn cache dir` creates the cache folder when it is missing
+/// (and through corepack can download Yarn itself), which a scan must not do.
 fn yarn(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
     let h = &ctx.home;
     let berry = h.join(".yarn/berry/cache");
-    let fallbacks = [os_cache(env, h, "Yarn", "yarn"), berry.clone()];
-    one(
-        resolve(&env.tools(h), "yarn", &["cache", "dir"], fallbacks).map(|p| {
-            // Yarn 2+ keeps a global mirror that only `--mirror` clears.
-            let argv: &[&str] = if p.starts_with(&berry) {
-                &["yarn", "cache", "clean", "--mirror"]
-            } else {
-                &["yarn", "cache", "clean"]
-            };
-            item("yarn-cache", p, "Yarn cache").command(argv.iter().copied())
-        }),
-    )
+    let mut candidates = Vec::new();
+    candidates.extend(env.var_path("YARN_CACHE_FOLDER"));
+    candidates.push(os_cache(env, h, "Yarn", "yarn"));
+    candidates.push(berry.clone());
+    one(first_dir(candidates).map(|p| {
+        // Yarn 2+ keeps a global mirror that only `--mirror` clears.
+        let argv: &[&str] = if p.starts_with(&berry) {
+            &["yarn", "cache", "clean", "--mirror"]
+        } else {
+            &["yarn", "cache", "clean"]
+        };
+        item("yarn-cache", p, "Yarn cache").command(argv.iter().copied())
+    }))
 }
 
 fn bun(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
