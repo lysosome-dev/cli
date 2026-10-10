@@ -48,3 +48,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --all-targets
+      # --all-targets skips doctests; this compiles the lysosome-core README
+      # example that docs.rs shows on the crate's front page.
+      - run: cargo test --workspace --doc
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Licenses, RustSec advisories (in place of `cargo audit`), banned or
+      # duplicate crates and sources, per deny.toml.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --all-features

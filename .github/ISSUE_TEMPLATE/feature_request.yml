@@ -1,0 +1,29 @@
+name: Feature request
+description: Suggest a new detector, flag or improvement
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: e.g. "Tool X keeps 30 GB in ~/.foo and lysosome doesn't see it."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like lysosome to do?
+      description: If it's a new cache or tool, how does that tool clean up after itself (its own cleanup command), and how can lysosome find the folder without running anything that writes or downloads?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety
+      options:
+        - label: This fits lysosome's [safety rules](https://github.com/lysosome-dev/cli#safety-rules) (scans stay read-only; when unsure, `REVIEW`).
+          required: true

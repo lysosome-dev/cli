@@ -14,6 +14,15 @@ Claude Code, Cursor and parallel agents create git worktrees constantly, and not
 
 <p align="center"><img src="docs/assets/worktrees.svg" alt="lysosome worktrees: dormant worktrees grouped by how safe they are to remove" width="860"></p>
 
+## Why lysosome?
+
+- **Built for agent-heavy workflows.** Claude Code, Cursor and other agents spin up a git worktree per task. lysosome finds the dormant ones and tells you which are truly safe to drop: clean, nothing untracked, not locked, and every commit merged or pushed.
+- **One scan, the whole machine.** Idle `node_modules` / `target` / `.venv`, package caches, local AI models (Ollama, Hugging Face, LM Studio), Docker, Xcode and simulators, with sizes measured like `du`.
+- **Safe by construction.** Scans are read-only, cleanup is a dry run until you confirm (`--yes` or the prompt), files go to the Trash, every item is re-checked right before it's touched, and anything uncertain is labelled `REVIEW` and never removed.
+- **Scriptable.** A versioned `--json` contract for dashboards, CI and agents.
+
+**Mac app (coming soon):** lysosome for the Mac, built on the same engine. [Join the waitlist at lysosome.dev](https://lysosome.dev).
+
 ## Install
 
 macOS (Apple silicon and Intel) and Linux (x86_64 and arm64). `git` must be on your `PATH`.
@@ -311,6 +320,20 @@ These are non-negotiable. Breaking any of them is a release-blocking bug.
 5. **Deletion goes to the Trash by default**, uses each tool's own cleanup command (`git worktree remove`, `docker builder prune`, `brew cleanup`, ...), defaults to dry-run, and re-checks every item right before acting (see [Clean up safely](#clean-up-safely)).
 6. **Symlinks are never followed** during walks or size calculations.
 7. **When unsure, `REVIEW`**, never `REMOVABLE`.
+
+## FAQ
+
+**Does it delete anything?**
+Only when you ask. `lysosome scan`, `worktrees` and `caches` never change anything on disk (a test checks every file's mtime and hash before and after a scan). `lysosome clean` is a dry run unless you pass `--yes` or answer `y` at its prompt, and even then it only removes `REMOVABLE` items (the one exception you opt into is `--strip-artifacts`, which moves git-ignored build folders out of dormant worktrees, `REVIEW` ones included, while keeping the worktrees): worktrees go through `git worktree remove` (never `--force`), caches through the tool's own cleanup command, and folders to the Trash unless you add `--permanent`. Every action is logged (see [Clean up safely](#clean-up-safely)).
+
+**Is my data sent anywhere?**
+No. lysosome has no telemetry, no analytics and no network code; it never phones home or checks for updates. Everything stays on your machine. To answer "where is your cache?" it runs the developer tools you already have (`git`, `brew`, `npm`, `docker`, `xcrun`...) locally, with their auto-updates and downloads switched off, and it never runs `git fetch`. It doesn't call `gh` or any GitHub API. During `clean --yes`, the cleanup commands it runs are the tools' own (`brew cleanup`, `pnpm store prune`...), so they behave as they would if you ran them yourself.
+
+**How does it know a worktree's commits are pushed?**
+From your local remote-tracking refs, since it never fetches. Run `git fetch` in a repo first if you want the freshest answer; until then a recently pushed branch may show as `REVIEW`, never the other way round.
+
+**Can I undo a cleanup?**
+Folders moved to the Trash can be put back from the Trash. Worktrees removed with `git worktree remove` keep their branch, so `git worktree add <path> <branch>` brings one back (without `--permanent`, ignored files that weren't build output, like `.env`, were moved to the Trash first; with `--permanent` they are deleted). Cache cleanup commands and `--permanent` can't be undone, which is why they only apply to `REMOVABLE` items and never run without `--yes`.
 
 ## Development
 

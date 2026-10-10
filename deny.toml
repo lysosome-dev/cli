@@ -1,0 +1,72 @@
+# cargo-deny configuration: https://embarkstudios.github.io/cargo-deny/
+# Run locally with `cargo deny check` (install: `cargo install --locked cargo-deny`
+# or `brew install cargo-deny`). CI runs it on every PR.
+
+[graph]
+# Check every target we ship (dist-workspace.toml), plus anything a
+# contributor might build on.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-musl",
+    "x86_64-unknown-linux-musl",
+]
+all-features = true
+
+# RustSec advisories (this replaces a separate `cargo audit` step).
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# An "unmaintained" advisory fails the check only for our direct
+# dependencies; deep transitive ones would break every PR without anything
+# we could change. (Security advisories fail for the whole tree.)
+unmaintained = "workspace"
+yanked = "deny"
+ignore = []
+
+# Licenses must be compatible with distributing lysosome under MIT, in source
+# and in the prebuilt binaries.
+[licenses]
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "Unlicense",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "BSL-1.0",
+    # File-level copyleft: unmodified MPL code can ship in an MIT binary as
+    # long as its source stays available (it is, on crates.io). Used by
+    # option-ext (via dirs).
+    "MPL-2.0",
+]
+confidence-threshold = 0.9
+# The list is deliberately broader than today's tree so Dependabot bumps
+# that pull in another permissive license don't fail CI.
+unused-allowed-license = "allow"
+
+[licenses.private]
+ignore = false
+
+[bans]
+# Two versions of one crate is worth knowing about, not a build failure.
+multiple-versions = "warn"
+wildcards = "deny"
+# Path dependencies inside this workspace carry versions, so the wildcard
+# rule only bites real registry deps.
+allow-wildcard-paths = true
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

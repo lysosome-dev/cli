@@ -1,6 +1,8 @@
 # Contributing to lysosome
 
-Thanks for helping. lysosome is a Rust workspace; the product spec, milestones
+Thanks for helping. By taking part you agree to follow the
+[code of conduct](CODE_OF_CONDUCT.md). Questions and ideas are welcome in
+[Discussions](https://github.com/lysosome-dev/cli/discussions). lysosome is a Rust workspace; the product spec, milestones
 and safety rules live in [docs/SPEC.md](docs/SPEC.md).
 
 ## Setup
@@ -15,7 +17,11 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-CI runs fmt, clippy and tests on macOS and Linux; all three must pass.
+CI runs fmt, clippy and tests on macOS and Linux; all three must pass. It
+also runs [`cargo deny check`](https://embarkstudios.github.io/cargo-deny/)
+(config in `deny.toml`): dependency licenses must be on the allowlist and
+RustSec advisories fail the build. Run it locally after adding or bumping a
+dependency (`brew install cargo-deny` or `cargo install --locked cargo-deny`).
 
 ## Layout
 
@@ -79,11 +85,17 @@ Maintainers cut releases with [cargo-dist](https://axodotdev.github.io/cargo-dis
 3. `release.yml` builds the archives (with man pages and completions from
    `scripts/dist-extras.sh`), `lysosome-installer.sh`, `lysosome.rb` and
    checksums, and publishes the GitHub Release.
-4. [lysosome-dev/homebrew-tap](https://github.com/lysosome-dev/homebrew-tap)
+4. The `custom-publish-crates` job (`.github/workflows/publish-crates.yml`)
+   then publishes `lysosome-core` and `lysosome` to crates.io, in that order.
+   It skips with a notice when the `CARGO_REGISTRY_TOKEN` secret isn't set and
+   skips any version already on crates.io, so re-running it is safe.
+5. [lysosome-dev/homebrew-tap](https://github.com/lysosome-dev/homebrew-tap)
    checks for new releases every 30 minutes. To publish right away (and to
    be safe if GitHub ever paused the schedule):
    `gh workflow run -R lysosome-dev/homebrew-tap update-formula.yml`.
 
 After editing `dist-workspace.toml`, run `dist generate` to refresh
 `release.yml`, and `dist plan` to check it. For a local dry run:
-`scripts/dist-extras.sh && dist build`.
+`scripts/dist-extras.sh && dist build`. Before tagging,
+`cargo publish --dry-run --workspace` checks that both crates package and
+build from their published contents.
