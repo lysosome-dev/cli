@@ -11,7 +11,7 @@
 //! rayon pool of `min(8, cores)` threads, so a scan of 300 worktrees never
 //! forks 300 gits at once.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -21,6 +21,20 @@ use std::time::Duration;
 use wait_timeout::ChildExt;
 
 use crate::error::{Error, Result};
+
+/// Environment variables that point git at a specific repository; always cleared.
+const REPO_ENV_VARS: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+];
 
 /// Default per-call timeout.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -48,6 +62,8 @@ impl GitOutput {
 #[derive(Debug)]
 pub struct Git {
     timeout: Duration,
+    /// Extra environment for every call (tests isolate HOME/GIT_CONFIG_GLOBAL).
+    envs: Vec<(OsString, OsString)>,
     pool: rayon::ThreadPool,
     calls: AtomicU64,
 }
@@ -72,7 +88,14 @@ impl Git {
             timeout,
             pool,
             calls: AtomicU64::new(0),
+            envs: Vec::new(),
         })
+    }
+
+    /// Add an environment variable to every git call.
+    pub fn with_env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
+        self.envs.push((key.into(), value.into()));
+        self
     }
 
     /// The bounded pool git-heavy work should run in (`git.pool().install(..)`).
@@ -102,6 +125,11 @@ impl Git {
     {
         self.calls.fetch_add(1, Ordering::Relaxed);
         let mut cmd = Command::new("git");
+        // Inherited repo-redirecting variables (set inside git hooks, `rebase
+        // --exec`, some IDEs) would make `-C <worktree>` analyze another repo.
+        for var in REPO_ENV_VARS {
+            cmd.env_remove(var);
+        }
         cmd.arg("--no-optional-locks")
             .args(["-c", "core.fsmonitor=false"])
             .arg("-C")
@@ -109,6 +137,7 @@ impl Git {
             .args(args)
             .env("GIT_OPTIONAL_LOCKS", "0")
             .env("GIT_TERMINAL_PROMPT", "0")
+            .envs(self.envs.iter().map(|(k, v)| (k, v)))
             .stdin(if input.is_some() {
                 Stdio::piped()
             } else {
@@ -186,8 +215,14 @@ mod tests {
 
     #[test]
     fn runs_git_and_reports_failure_cleanly() {
-        let git = Git::new(DEFAULT_TIMEOUT, Some(2)).unwrap();
         let t = tempfile::tempdir().unwrap();
+        let cfg = t.path().join("gitconfig");
+        std::fs::write(&cfg, "").unwrap();
+        let git = Git::new(DEFAULT_TIMEOUT, Some(2))
+            .unwrap()
+            .with_env("HOME", t.path())
+            .with_env("GIT_CONFIG_GLOBAL", &cfg)
+            .with_env("GIT_CONFIG_NOSYSTEM", "1");
         let out = git.run(t.path(), ["rev-parse", "--is-inside-work-tree"]);
         assert!(!out.success, "temp dir is not a repo");
         let out = git.run(t.path(), ["--version"]);

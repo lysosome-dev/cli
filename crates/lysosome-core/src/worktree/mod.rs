@@ -148,17 +148,22 @@ impl Worktree {
                 "unpushed": self.unpushed,
                 "merged_into": self.merged_into,
                 "locked": self.locked,
-                "main_repo": self.main_repo,
-                "gitdir": self.gitdir,
+                "main_repo": self.main_repo.as_deref().map(lossy),
+                "gitdir": lossy(&self.gitdir),
                 "artifact_bytes": self.artifact_bytes,
                 "artifacts": self.artifacts.iter().map(|a| json!({
-                    "path": a.path,
+                    "path": lossy(&a.path),
                     "size_bytes": a.size_bytes,
                 })).collect::<Vec<_>>(),
             }),
             cleanup: self.cleanup_command().map(|command| Cleanup { command }),
         }
     }
+}
+
+/// Path as a (lossy) UTF-8 string for JSON; never panics on odd bytes.
+fn lossy(p: &Path) -> String {
+    p.to_string_lossy().into_owned()
 }
 
 /// Time spent in one phase.
@@ -424,7 +429,7 @@ fn build_worktree(
     wt.reason = reason;
     wt.idle_days = a.facts.idle_days;
     wt.last_activity = a.last_activity;
-    wt.branch = pre.branch.clone();
+    wt.branch = a.branch;
     wt.changed = a.facts.changed;
     wt.untracked = a.facts.untracked;
     wt.merged_into = a.facts.merged_into;

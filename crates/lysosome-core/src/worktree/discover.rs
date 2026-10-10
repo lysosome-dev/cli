@@ -39,12 +39,12 @@ pub(crate) fn discover(roots: &[PathBuf], max_depth: usize, progress: &dyn Progr
     let stats = walk::walk(roots, &opts, progress, |v| {
         if let Some(e) = v.entry(".git") {
             let dotgit = v.path.join(".git");
-            match dotgit_kind(&dotgit, e.kind) {
+            match dotgit_kind(e.kind) {
                 DotGit::File => {
                     if let Some(gd) = read_gitdir_pointer(&dotgit) {
-                        // Submodules also use .git files; keep only real worktrees.
-                        let s = gd.to_string_lossy();
-                        if s.contains("/worktrees/") && !s.contains("/modules/") {
+                        // Submodules (`.git/modules/x`) and `--separate-git-dir`
+                        // repos also use .git files; keep only linked worktrees.
+                        if is_linked_worktree_gitdir(&gd) {
                             lock(&found).worktrees.insert(v.path.to_path_buf(), gd);
                         }
                     }
@@ -80,8 +80,17 @@ pub(crate) fn discover(roots: &[PathBuf], max_depth: usize, progress: &dyn Progr
             let dotgit = absolutize(&meta, Path::new(raw.trim()));
             let wt_path = dotgit.parent().map(Path::to_path_buf).unwrap_or_default();
             if wt_path.is_dir() {
-                let key = wt_path.canonicalize().unwrap_or(wt_path);
-                worktrees.entry(key).or_insert(meta);
+                // Only trust the record if the folder's .git still points back
+                // at it; otherwise `git -C` would analyze whatever encloses it.
+                let points_back = read_gitdir_pointer(&wt_path.join(".git"))
+                    .is_some_and(|gd| same_path(&gd, &meta));
+                if points_back {
+                    let key = wt_path.canonicalize().unwrap_or(wt_path);
+                    worktrees.entry(key).or_insert(meta);
+                }
+            } else if meta.join("locked").exists() {
+                // Locked records (e.g. worktrees on an unplugged drive) are
+                // deliberately kept by `git worktree prune`; not stale.
             } else {
                 stale.push(StaleMetadata {
                     repo: main.clone(),
@@ -117,18 +126,29 @@ enum DotGit {
     Neither,
 }
 
-/// Classify a `.git` entry the way `os.walk` does: a symlink counts as
-/// whatever it points at (we only stat it; we never walk through it).
-fn dotgit_kind(path: &Path, kind: EntryKind) -> DotGit {
+/// Classify a `.git` entry. Symlinks are never followed (safety rule 6), so a
+/// symlinked `.git` is ignored.
+fn dotgit_kind(kind: EntryKind) -> DotGit {
     match kind {
         EntryKind::File => DotGit::File,
         EntryKind::Dir => DotGit::Dir,
-        EntryKind::Symlink => match fs::metadata(path) {
-            Ok(m) if m.is_dir() => DotGit::Dir,
-            Ok(_) | Err(_) => DotGit::File,
-        },
-        EntryKind::Other => DotGit::Neither,
+        EntryKind::Symlink | EntryKind::Other => DotGit::Neither,
     }
+}
+
+/// A linked worktree's gitdir is `<common>/worktrees/<name>`.
+fn is_linked_worktree_gitdir(gd: &Path) -> bool {
+    gd.parent()
+        .and_then(Path::file_name)
+        .is_some_and(|n| n == "worktrees")
+}
+
+fn same_path(a: &Path, b: &Path) -> bool {
+    a == b
+        || match (a.canonicalize(), b.canonicalize()) {
+            (Ok(x), Ok(y)) => x == y,
+            _ => false,
+        }
 }
 
 /// A worktree's `.git` is a file: `gitdir: /repo/.git/worktrees/<name>`.
@@ -174,6 +194,19 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn linked_worktree_gitdirs_are_recognized_structurally() {
+        assert!(is_linked_worktree_gitdir(Path::new("/r/.git/worktrees/x")));
+        // main repo under a folder called "modules" still works
+        assert!(is_linked_worktree_gitdir(Path::new(
+            "/tf/modules/app/.git/worktrees/x"
+        )));
+        assert!(!is_linked_worktree_gitdir(Path::new("/r/.git/modules/sub")));
+        assert!(!is_linked_worktree_gitdir(Path::new(
+            "/worktrees/store/foo.git"
+        )));
+    }
 
     #[test]
     fn normalizes_like_normpath() {

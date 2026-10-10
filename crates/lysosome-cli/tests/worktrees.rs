@@ -497,3 +497,30 @@ fn help_is_helpful() {
         assert!(text.contains(needle), "help missing {needle}");
     }
 }
+
+#[test]
+fn hostile_git_environment_cannot_make_work_look_clean() {
+    let fx = Fixture::new();
+    let baseline: BTreeMap<String, Value> = by_name(&fx.json());
+    // Config that hides untracked files, and a GIT_DIR inherited from e.g. a hook.
+    let cfg = fx.dest.join("gitconfig");
+    let mut text = fs::read_to_string(&cfg).unwrap();
+    text.push_str("[status]\n\tshowUntrackedFiles = no\n");
+    fs::write(&cfg, text).unwrap();
+    let code = fx.code();
+    let out = fx
+        .lysosome()
+        .env("GIT_DIR", code.join("solo/.git"))
+        .env("GIT_WORK_TREE", code.join("solo"))
+        .args(["worktrees", code.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let got = by_name(&report);
+    for (name, f) in &baseline {
+        assert_eq!(got[name]["status"], f["status"], "{name}");
+        assert_eq!(got[name]["reason"], f["reason"], "{name}");
+    }
+    assert_eq!(got["app-dirty"]["details"]["untracked"], 1);
+}

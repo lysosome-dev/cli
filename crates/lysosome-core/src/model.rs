@@ -103,6 +103,7 @@ pub struct Finding {
     pub category: Category,
     /// Finer-grained type within the category (`"worktree"`, `"node_modules"`, `"ollama-model"`...).
     pub kind: String,
+    #[serde(with = "lossy_path")]
     pub path: PathBuf,
     /// Allocated bytes on disk (like `du`), hard links counted once.
     pub size_bytes: u64,
@@ -124,10 +125,12 @@ pub struct Finding {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StaleMetadata {
     /// The main repository that holds the record.
+    #[serde(with = "lossy_path")]
     pub repo: PathBuf,
     /// Record name under `.git/worktrees/`.
     pub name: String,
     /// The worktree path the record points at (missing).
+    #[serde(with = "lossy_path")]
     pub missing_path: PathBuf,
     pub cleanup: Cleanup,
 }
@@ -140,6 +143,7 @@ pub struct Skipped {
     /// Folders skipped for any other I/O error.
     pub other_errors: u64,
     /// Requested scan roots that don't exist or aren't folders.
+    #[serde(with = "lossy_paths")]
     pub missing_roots: Vec<PathBuf>,
 }
 
@@ -184,6 +188,7 @@ impl Summary {
 pub struct Report {
     pub schema_version: u32,
     pub tool_version: String,
+    #[serde(with = "lossy_paths")]
     pub scanned_roots: Vec<PathBuf>,
     pub dormant_after_days: u64,
     pub summary: Summary,
@@ -211,6 +216,39 @@ impl Report {
             stale_metadata,
             skipped,
         }
+    }
+}
+
+/// Paths serialize as strings; bytes that aren't valid UTF-8 become U+FFFD
+/// instead of failing the whole report.
+pub(crate) mod lossy_path {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::path::{Path, PathBuf};
+
+    pub fn serialize<S: Serializer>(p: &Path, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&p.to_string_lossy())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<PathBuf, D::Error> {
+        PathBuf::deserialize(d)
+    }
+}
+
+mod lossy_paths {
+    use serde::ser::SerializeSeq;
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::path::PathBuf;
+
+    pub fn serialize<S: Serializer>(v: &[PathBuf], s: S) -> Result<S::Ok, S::Error> {
+        let mut seq = s.serialize_seq(Some(v.len()))?;
+        for p in v {
+            seq.serialize_element(&p.to_string_lossy())?;
+        }
+        seq.end()
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<PathBuf>, D::Error> {
+        Vec::<PathBuf>::deserialize(d)
     }
 }
 
@@ -267,6 +305,15 @@ mod tests {
         assert_eq!(s.by_tier[&Tier::RegenerableExpensive], 0);
         assert_eq!(s.by_category[&Category::Worktrees], 140);
         assert_eq!(s.by_category.len(), Category::ALL.len());
+    }
+
+    #[test]
+    fn non_utf8_paths_serialize_lossily_instead_of_failing() {
+        use std::os::unix::ffi::OsStrExt;
+        let mut f = finding(Status::Review, Tier::Review, 1);
+        f.path = PathBuf::from(std::ffi::OsStr::from_bytes(b"/home/u/\xff/wt"));
+        let v = serde_json::to_value(&f).unwrap();
+        assert_eq!(v["path"], "/home/u/\u{fffd}/wt");
     }
 
     #[test]

@@ -128,6 +128,7 @@ fn default_branch(git: &Git, wt: &Path) -> Option<String> {
 #[derive(Debug, Clone)]
 pub(crate) struct Analysis {
     pub facts: Facts,
+    pub branch: Option<String>,
     pub last_activity: Option<SystemTime>,
 }
 
@@ -159,11 +160,34 @@ pub(crate) fn analyze(
         (None, None)
     };
 
-    let status = git.run(wt, ["status", "--porcelain"]);
+    // Pin the options that decide "clean" so user config (e.g.
+    // status.showUntrackedFiles=no) can't hide work.
+    let status = git.run(
+        wt,
+        [
+            "status",
+            "--porcelain",
+            "--untracked-files=normal",
+            "--ignore-submodules=none",
+        ],
+    );
     let text = String::from_utf8_lossy(&status.stdout);
     let lines: Vec<&str> = text.lines().filter(|l| !l.is_empty()).collect();
     let untracked = lines.iter().filter(|l| l.starts_with("??")).count() as u64;
     let changed = lines.len() as u64 - untracked;
+
+    // With the reftable backend HEAD is a `refs/heads/.invalid` stub; ask git.
+    let branch = match pre.branch.as_deref() {
+        Some(".invalid") => {
+            let out = git.run(wt, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+            Some(if out.success {
+                out.text()
+            } else {
+                "(detached)".to_string()
+            })
+        }
+        other => other.map(str::to_string),
+    };
 
     let key = pre.common_dir.clone().unwrap_or_else(|| c.gitdir.clone());
     let key = key.canonicalize().unwrap_or(key);
@@ -196,6 +220,7 @@ pub(crate) fn analyze(
             has_remote: repo.has_remote,
             unpushed,
         },
+        branch,
         last_activity,
     }
 }

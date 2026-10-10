@@ -375,16 +375,22 @@ fn render_table(
         let mut sorted = removable.clone();
         sorted.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes).then(a.path.cmp(&b.path)));
         for w in sorted.iter().take(MAX_COMMANDS_SHOWN) {
-            let repo = w.main_repo.as_deref().unwrap_or(&w.path);
-            writeln!(
-                o,
-                "    {} {} {} {}",
-                p.dim("git -C"),
-                ui::shell_quote(&repo.to_string_lossy()),
-                p.dim("worktree remove"),
-                ui::shell_quote(&w.path.to_string_lossy()),
-            )
-            .ok();
+            // Same argv the JSON contract carries; quote only the arguments.
+            let Some(cmd) = w.cleanup_command() else {
+                continue;
+            };
+            let line = cmd
+                .iter()
+                .map(|a| {
+                    if a.starts_with('/') {
+                        ui::shell_quote(a)
+                    } else {
+                        p.dim(a)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            writeln!(o, "    {line}").ok();
         }
         if sorted.len() > MAX_COMMANDS_SHOWN {
             writeln!(

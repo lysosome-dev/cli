@@ -27,7 +27,8 @@ pub struct Facts {
 /// Order matters and mirrors the prototype: activity first, then lock, then
 /// dirtiness, then commit safety. Anything uncertain lands in `REVIEW`.
 pub fn classify(f: &Facts, dormant_after_days: u64) -> (Status, String) {
-    let dormant = matches!(f.idle_days, Some(d) if d >= dormant_after_days as i64);
+    let threshold = i64::try_from(dormant_after_days).unwrap_or(i64::MAX);
+    let dormant = matches!(f.idle_days, Some(d) if d >= threshold);
     if !dormant {
         return (Status::Active, String::new());
     }

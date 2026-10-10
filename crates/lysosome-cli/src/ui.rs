@@ -149,8 +149,13 @@ pub fn pad_left(s: &str, w: usize) -> String {
     format!("{}{s}", " ".repeat(w.saturating_sub(n)))
 }
 
-/// Quote a path for a POSIX shell command line (double quotes, like the prototype).
+/// Quote an argument for a POSIX shell. Double quotes like the prototype,
+/// unless the text contains `!` (history expansion in interactive bash),
+/// in which case single quotes are used.
 pub fn shell_quote(s: &str) -> String {
+    if s.contains('!') {
+        return format!("'{}'", s.replace('\'', "'\\''"));
+    }
     let escaped = s
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
@@ -195,6 +200,7 @@ mod tests {
     fn quotes_for_shell() {
         assert_eq!(shell_quote("/a b/c"), "\"/a b/c\"");
         assert_eq!(shell_quote("/a$b\"c"), "\"/a\\$b\\\"c\"");
+        assert_eq!(shell_quote("/wow!/it's"), "'/wow!/it'\\''s'");
     }
 
     #[test]
