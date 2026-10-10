@@ -125,7 +125,7 @@ pub struct GlobalArgs {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Find everything reclaimable: idle project artifacts and dormant worktrees
+    /// Find idle project artifacts (node_modules, target, .venv...) and dormant worktrees
     #[command(after_help = SCAN_HELP)]
     Scan(ScanArgs),
 
