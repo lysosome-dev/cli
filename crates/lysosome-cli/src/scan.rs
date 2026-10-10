@@ -55,7 +55,17 @@ pub fn run(args: &ScanArgs, global: &GlobalArgs) -> Result<String> {
         s.clear();
     }
 
-    if run.all_failed() {
+    // The roots drive the project detectors; if all of those failed (e.g. no
+    // root exists) the scan is meaningless even though the system detectors,
+    // which ignore roots, succeeded.
+    let is_project = |c: Category| matches!(c, Category::Worktrees | Category::Artifacts);
+    let projects_failed = run
+        .runs
+        .iter()
+        .filter(|r| is_project(r.category))
+        .all(|r| r.error.is_some())
+        && run.runs.iter().any(|r| is_project(r.category));
+    if run.all_failed() || projects_failed {
         let err = run.runs.iter_mut().find_map(|r| r.error.take());
         return Err(err
             .map(anyhow::Error::from)
@@ -455,12 +465,23 @@ fn generic_section(
         .sum();
 
     let all_rows = kept.iter().flat_map(|b| b.rows.iter());
+    // System findings carry a human name (`llama3.1:8b`, `web:1.0`, `iOS 17.5`);
+    // show it instead of the kind when the section has one.
+    let named = kept
+        .iter()
+        .flat_map(|b| b.rows.iter())
+        .any(|r| r.f.details["name"].is_string());
+    let label_title = if named { "NAME" } else { "KIND" };
     let cells: Vec<[String; 4]> = all_rows
         .map(|r| {
+            let label = match r.f.details["name"].as_str() {
+                Some(name) => ui::truncate(name, 32),
+                None => ui::truncate(&r.f.kind, 16),
+            };
             [
                 human_bytes(r.f.size_bytes),
                 idle_days(r.f, now).map_or("–".into(), |d| format!("{d}d")),
-                ui::truncate(&r.f.kind, 16),
+                label,
                 r.path.clone(),
             ]
         })
@@ -473,7 +494,7 @@ fn generic_section(
             .max()
             .unwrap_or(0)
     };
-    let (ws, wi, wk) = (width(0, "SIZE"), width(1, "IDLE"), width(2, "KIND"));
+    let (ws, wi, wk) = (width(0, "SIZE"), width(1, "IDLE"), width(2, label_title));
     const WSTAT: usize = 9;
     const WTIER: usize = 6;
     // Rows sit under project headers when there are any; indent them all alike.
@@ -491,7 +512,7 @@ fn generic_section(
             pad_right("TIER", WTIER),
             pad_left("SIZE", ws),
             pad_left("IDLE", wi),
-            pad_right("KIND", wk),
+            pad_right(label_title, wk),
         ))
     )
     .ok();

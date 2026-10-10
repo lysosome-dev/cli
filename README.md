@@ -10,7 +10,7 @@ Claude Code, Cursor and parallel agents create git worktrees constantly, and not
 
 `lysosome` shows you where the disk went, labels every item by how safe it is to delete, and (soon) cleans it up safely.
 
-> 🚧 Under active development. `lysosome scan` (idle project artifacts + dormant worktrees) and `lysosome caches` (package caches, AI models, Docker, Xcode) are here; safe cleanup is next. See [docs/SPEC.md](docs/SPEC.md).
+> 🚧 Under active development. `lysosome scan` (idle project artifacts, dormant worktrees, plus everything `lysosome caches` finds: package caches, AI models, Docker, Xcode) is here; safe cleanup is next. See [docs/SPEC.md](docs/SPEC.md).
 
 <p align="center"><img src="docs/assets/worktrees.svg" alt="lysosome worktrees: dormant worktrees grouped by how safe they are to remove" width="860"></p>
 
@@ -55,7 +55,7 @@ lysosome completions fish > ~/.config/fish/completions/lysosome.fish            
 ## Quick start
 
 ```bash
-lysosome scan                            # idle project artifacts + worktrees in your home folder
+lysosome scan                            # artifacts, worktrees, caches, models, Docker, Xcode
 lysosome scan ~/code ~/.worktrees        # scan specific folders (faster)
 lysosome scan --days 180                 # only call projects idle 180+ days dormant
 lysosome scan --all                      # also list active items

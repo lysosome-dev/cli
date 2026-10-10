@@ -2,7 +2,8 @@
 //!
 //! * [`project_detectors`] — scanners driven by the scan roots (worktrees,
 //!   artifacts). They share one walk through [`ScanContext::projects`].
-//! * [`all_detectors`] — everything `lysosome scan` runs.
+//! * [`all_detectors`] — everything `lysosome scan` runs: the project
+//!   detectors plus the machine-wide [`crate::system`] detectors.
 //! * [`run`] — runs detectors concurrently and builds the combined [`Report`].
 //!
 //! Adding a scanner: implement [`Detector`] and append it to [`all_detectors`].
@@ -23,9 +24,12 @@ pub fn project_detectors() -> Vec<Box<dyn Detector>> {
     vec![Box::new(WorktreeDetector), Box::new(ArtifactDetector)]
 }
 
-/// Everything `lysosome scan` runs.
+/// Everything `lysosome scan` runs: project detectors, then the system
+/// detectors (caches, AI models, Docker, Xcode, Android, editors).
 pub fn all_detectors() -> Vec<Box<dyn Detector>> {
-    project_detectors()
+    let mut all = project_detectors();
+    all.extend(crate::system::detectors());
+    all
 }
 
 /// How one detector did.
@@ -176,8 +180,20 @@ mod tests {
     }
 
     #[test]
-    fn registry_lists_project_detectors() {
+    fn registry_lists_project_then_system_detectors() {
         let ids: Vec<_> = all_detectors().iter().map(|d| d.id()).collect();
-        assert_eq!(ids, ["worktrees", "artifacts"]);
+        assert_eq!(ids[..2], ["worktrees", "artifacts"]);
+        for id in [
+            "ollama",
+            "huggingface",
+            "docker",
+            "npm",
+            "homebrew",
+            "android-avd",
+            "vscode",
+        ] {
+            assert!(ids.contains(&id), "{id} missing from {ids:?}");
+        }
+        assert_eq!(ids.len(), 2 + crate::system::detectors().len());
     }
 }

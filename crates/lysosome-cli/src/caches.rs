@@ -57,19 +57,6 @@ fn parse_category(s: &str) -> Result<Category, String> {
     }
 }
 
-fn category_title(c: Category) -> &'static str {
-    match c {
-        Category::Worktrees => "Worktrees",
-        Category::Artifacts => "Build artifacts",
-        Category::AiModels => "AI models",
-        Category::Xcode => "Xcode",
-        Category::PackageCaches => "Package caches",
-        Category::Containers => "Containers",
-        Category::Editors => "Editors",
-        Category::Android => "Android",
-    }
-}
-
 pub fn run(args: &CachesArgs, global: &GlobalArgs) -> Result<String> {
     let home = dirs::home_dir().ok_or(lysosome_core::Error::NoHomeDir)?;
     let shortener = PathShortener::new(Some(home.clone()));
@@ -281,7 +268,7 @@ fn render_table(
         writeln!(
             o,
             "  {}  {}",
-            p.bold(category_title(cat).to_uppercase()),
+            p.bold(cat.display_name().to_uppercase()),
             p.dim(human_bytes(cat_total))
         )
         .ok();

@@ -1,6 +1,8 @@
 //! End-to-end tests for `lysosome scan` against `tests/fixtures/make_projects.sh`
 //! (and `make_worktrees.sh` for schema coverage). Every test uses its own temp
-//! dir with an isolated HOME and GIT_CONFIG_GLOBAL.
+//! dir with an isolated HOME and GIT_CONFIG_GLOBAL, a cleared environment and
+//! a PATH holding only `git`, so the system detectors that `scan` also runs
+//! never see the machine's real Docker, Homebrew, Xcode or caches.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -21,6 +23,17 @@ fn repo_root() -> PathBuf {
 struct Fixture {
     _tmp: tempfile::TempDir,
     dest: PathBuf,
+    /// The only folder on PATH: a symlink to the real `git`, plus any fake tools.
+    bin: PathBuf,
+}
+
+/// Absolute path of the real `git`.
+fn real_git() -> PathBuf {
+    let out = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .expect("find git");
+    PathBuf::from(String::from_utf8(out.stdout).unwrap().trim())
 }
 
 impl Fixture {
@@ -39,7 +52,14 @@ impl Fixture {
             String::from_utf8_lossy(&out.stderr)
         );
         let dest = PathBuf::from(String::from_utf8(out.stdout).unwrap().trim());
-        Fixture { _tmp: tmp, dest }
+        let bin = tmp.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(real_git(), bin.join("git")).unwrap();
+        Fixture {
+            _tmp: tmp,
+            dest,
+            bin,
+        }
     }
 
     fn projects() -> Self {
@@ -52,7 +72,9 @@ impl Fixture {
 
     fn lysosome(&self) -> Command {
         let mut cmd = Command::cargo_bin("lysosome").unwrap();
-        cmd.env("HOME", self.dest.join("home"))
+        cmd.env_clear()
+            .env("PATH", &self.bin)
+            .env("HOME", self.dest.join("home"))
             .env("GIT_CONFIG_GLOBAL", self.dest.join("gitconfig"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("NO_COLOR", "1")
@@ -595,4 +617,68 @@ fn scan_help_is_helpful() {
     }
     let out = Command::cargo_bin("lysosome").unwrap().output().unwrap();
     assert!(String::from_utf8(out.stdout).unwrap().contains("scan"));
+}
+
+/// `scan` also runs the system detectors: with HOME and PATH pointed at the
+/// caches fixture (fake docker, brew, go...), their categories show up next to
+/// the project sections in both the JSON and the table.
+#[test]
+fn scan_includes_system_detectors() {
+    let projects = Fixture::projects();
+    let caches = Fixture::new("make_caches.sh");
+    let fake_bin = caches.dest.join("bin");
+    for tool in fs::read_dir(&fake_bin).unwrap() {
+        let tool = tool.unwrap().path();
+        std::os::unix::fs::symlink(&tool, projects.bin.join(tool.file_name().unwrap())).unwrap();
+    }
+    let code = projects.code();
+    let scan = |extra: &[&str]| {
+        let mut args = vec!["scan", code.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        let out = projects
+            .lysosome()
+            .env("HOME", caches.dest.join("home"))
+            .env("LYSOSOME_TOOL_TIMEOUT_MS", "12000")
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out.stdout
+    };
+    let report: Value = serde_json::from_slice(&scan(&["--json"])).unwrap();
+    validate(&report);
+    let has = |cat: &str| findings(&report).iter().any(|f| f["category"] == cat);
+    for cat in [
+        "artifacts",
+        "ai_models",
+        "containers",
+        "package_caches",
+        "android",
+    ] {
+        assert!(has(cat), "no {cat} findings in scan");
+    }
+    let llama = findings(&report)
+        .iter()
+        .find(|f| f["details"]["name"] == "llama3.1:8b")
+        .expect("Ollama model by name");
+    assert_eq!(llama["cleanup"]["command"][0], "ollama");
+    assert!(
+        report["summary"]["by_category"]["containers"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+
+    let text = String::from_utf8(scan(&[])).unwrap();
+    for title in ["AI models", "Containers", "Package caches"] {
+        assert!(text.contains(title), "{title} section missing:\n{text}");
+    }
+    assert!(
+        text.contains("llama3.1:8b"),
+        "models shown by name:\n{text}"
+    );
 }
