@@ -202,7 +202,13 @@ pub fn allocated_size(path: &Path) -> u64 {
 
 #[cfg(target_os = "macos")]
 fn list_dir(path: &Path) -> io::Result<Listing> {
-    bulk::list(path)
+    match bulk::list(path) {
+        // Some filesystems (network, FAT, ...) don't implement getattrlistbulk.
+        Err(e) if matches!(e.raw_os_error(), Some(libc::ENOTSUP | libc::EINVAL)) => {
+            portable_list(path)
+        }
+        other => other,
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -210,8 +216,7 @@ fn list_dir(path: &Path) -> io::Result<Listing> {
     portable_list(path)
 }
 
-/// `readdir` + `lstat`, for every Unix.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+/// `readdir` + `lstat`, for every Unix (and the macOS fallback).
 fn portable_list(path: &Path) -> io::Result<Listing> {
     let meta = std::fs::symlink_metadata(path)?;
     let mut listing = Listing {
