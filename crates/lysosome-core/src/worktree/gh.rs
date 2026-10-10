@@ -130,6 +130,10 @@ pub struct Gh {
     prs: Mutex<HashMap<(String, String), PrCell>>,
     /// repo -> (default branch, current owner) (None: gh failed).
     repo_info: Mutex<HashMap<String, RepoCell>>,
+    /// Hosts gh couldn't reach this run (offline, captive portal, signed
+    /// out): later repositories on them are skipped instead of each waiting
+    /// for the timeout.
+    down: Mutex<std::collections::HashSet<String>>,
     calls: AtomicU64,
 }
 
@@ -164,6 +168,7 @@ impl Gh {
             tools,
             prs: Mutex::default(),
             repo_info: Mutex::default(),
+            down: Mutex::default(),
             calls: AtomicU64::new(0),
         })
     }
@@ -234,10 +239,33 @@ impl Gh {
         let Some(repo) = github_repo(git, wt, branch) else {
             return Verdict::Unknown;
         };
+        let host = repo.split('/').next().unwrap_or_default().to_string();
+        let unreachable =
+            || Verdict::Unavailable(format!("gh could not reach {host} (signed in? online?)"));
+        if self
+            .down
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&host)
+        {
+            return unreachable();
+        }
         let Some((base, owner)) = self.repo_info(&repo) else {
-            return Verdict::Unavailable(format!("gh could not reach {repo} (signed in? online?)"));
+            self.down
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(host.clone());
+            return unreachable();
         };
-        let Some(prs) = self.merged_prs(&repo, branch) else {
+        // The PR's head is the branch as pushed (`branch.<name>.merge`),
+        // which can differ from the local name.
+        let pushed = git.run(wt, ["config", "--get", &format!("branch.{branch}.merge")]);
+        let pushed = pushed.text();
+        let head_branch = pushed
+            .strip_prefix("refs/heads/")
+            .filter(|b| !b.is_empty())
+            .unwrap_or(branch);
+        let Some(prs) = self.merged_prs(&repo, head_branch) else {
             return Verdict::Unavailable(format!("gh could not list {repo}'s merged PRs"));
         };
         let prs = relevant(prs, &base, &owner);
@@ -246,6 +274,19 @@ impl Gh {
                 number: pr.number,
                 url: pr.url.clone(),
             }),
+            // The PR got more commits after this checkout: every local
+            // commit is in what was merged.
+            Decision::Other(pr)
+                if is_sha(&pr.head)
+                    && git
+                        .run(wt, ["merge-base", "--is-ancestor", "HEAD", &pr.head])
+                        .success =>
+            {
+                Verdict::SquashMerged(MergedPr {
+                    number: pr.number,
+                    url: pr.url.clone(),
+                })
+            }
             Decision::Other(pr) => {
                 let ancestor = is_sha(&pr.head)
                     && git
@@ -276,23 +317,14 @@ impl Gh {
     }
 
     /// Run [`Gh::verdict`] for many worktrees, [`GH_CONCURRENCY`] at a time.
-    pub(crate) fn verdicts(
-        &self,
-        git: &Git,
-        jobs: &[(&Path, &str)],
-        progress: &dyn crate::progress::Progress,
-    ) -> Vec<Verdict> {
+    pub(crate) fn verdicts(&self, git: &Git, jobs: &[(&Path, &str)]) -> Vec<Verdict> {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(GH_CONCURRENCY)
             .thread_name(|i| format!("lysosome-gh-{i}"))
             .build();
         let run = || {
             jobs.par_iter()
-                .map(|(wt, branch)| {
-                    let v = self.verdict(git, wt, branch);
-                    progress.advance(1);
-                    v
-                })
+                .map(|(wt, branch)| self.verdict(git, wt, branch))
                 .collect()
         };
         match pool {

@@ -20,7 +20,7 @@ These apply to every milestone. Violating any of them is a bug that blocks relea
 
 1. **Scanning never modifies anything.** No writes, no index refresh, no lock files. All git calls use `git --no-optional-locks`.
 2. **Read timestamps before running git.** Git can touch the index; capture `index`, `HEAD` and `logs/HEAD` mtimes first.
-3. **Never remove or suggest removing a worktree** that has uncommitted changes, untracked files, is locked, or has commits that are neither merged into the default branch nor pushed to a remote.
+3. **Never remove or suggest removing a worktree** that has uncommitted changes, untracked files, is locked, or has commits that are neither merged into the default branch nor pushed to a remote. A squash merge counts as merged only when GitHub (via `gh`) shows a PR merged into the default branch whose head contains HEAD; `clean` re-verifies it right before removing.
 4. **Only count a folder as an artifact if git ignores it** (`git check-ignore`). Never call tracked source "junk".
 5. **Deletion (Milestone 4+) goes to the macOS Trash by default**, uses each tool's own cleanup command where one exists (`git worktree remove`, `docker image prune`, `brew cleanup`, `xcrun simctl delete unavailable`, `go clean -modcache`), and defaults to dry-run.
 6. **Never follow symlinks** during walks or size calculations.

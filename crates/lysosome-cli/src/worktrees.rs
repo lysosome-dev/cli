@@ -27,7 +27,7 @@ pub fn run(args: &WorktreesArgs, global: &GlobalArgs) -> Result<String> {
     let mut opts = ScanOptions::new(roots.clone());
     opts.dormant_after_days = args.days;
     opts.max_depth = args.depth;
-    opts.github = args.github();
+    opts.github = args.net.github();
 
     let err_color = ui::color_enabled(global.no_color, ui::stderr_is_tty());
     let warn = Painter::new(err_color);

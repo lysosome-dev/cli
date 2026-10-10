@@ -45,7 +45,7 @@ pub fn run(cmd: &ScanCmdArgs, global: &GlobalArgs) -> Result<String> {
     let mut ctx = ScanContext::new(roots, home.clone().unwrap_or_default());
     ctx.dormant_after_days = args.days;
     ctx.max_depth = args.depth;
-    ctx.github = args.github();
+    ctx.github = args.net.github();
     if let Some(s) = &spinner {
         ctx.progress = s;
     } else {

@@ -246,13 +246,6 @@ pub struct ScanArgs {
     pub net: NetArgs,
 }
 
-impl ScanArgs {
-    /// Whether to ask GitHub about squash-merged worktrees.
-    pub fn github(&self) -> bool {
-        self.net.github()
-    }
-}
-
 /// Network switches shared by `scan`, `worktrees` and `clean`.
 #[derive(Debug, Clone, Default, Args)]
 pub struct NetArgs {

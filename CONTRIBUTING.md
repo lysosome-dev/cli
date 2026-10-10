@@ -43,7 +43,8 @@ These are release blockers (full text in the [README](README.md#safety-rules)):
 1. Scanning never modifies anything. Every git call uses `git --no-optional-locks`.
 2. Read index / `HEAD` / `logs/HEAD` timestamps before running git.
 3. Never remove or suggest removing a worktree that is dirty, has untracked
-   files, is locked, or has commits that are neither merged nor pushed.
+   files, is locked, or has commits that are neither merged nor pushed (a
+   squash merge counts only when `gh` confirms it; `clean` re-verifies).
 4. Only count an artifact folder when `git check-ignore` confirms it.
 5. Deletion defaults to dry-run, uses each tool's own cleanup command, else
    the macOS Trash.

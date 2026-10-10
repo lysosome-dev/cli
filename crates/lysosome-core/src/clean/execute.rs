@@ -262,6 +262,7 @@ impl<'a> Executor<'a> {
                     // Ctrl-C can kill a re-check's git process; a skip then
                     // says nothing about the item itself.
                     if r.outcome == Outcome::Skipped
+                        && r.message != INTERRUPTED
                         && self.stop.is_some_and(|s| s.load(Ordering::SeqCst))
                     {
                         r.message = format!("{INTERRUPTED} (during the re-check: {})", r.message);

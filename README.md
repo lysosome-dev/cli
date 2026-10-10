@@ -338,7 +338,7 @@ These are non-negotiable. Breaking any of them is a release-blocking bug.
 
 1. **Scanning never modifies anything.** No writes, no index refresh, no lock files. Every git call uses `git --no-optional-locks`. A test snapshots every file's mtime and hash before and after a scan.
 2. **Timestamps are read before git runs**, so git can never skew "last used".
-3. **Never remove or suggest removing a worktree** that has uncommitted changes or untracked files, is locked, or has commits that are neither merged into the default branch nor pushed.
+3. **Never remove or suggest removing a worktree** that has uncommitted changes or untracked files, is locked, or has commits that are neither merged into the default branch nor pushed. (A squash merge counts as merged only when `gh` shows a PR merged into the default branch whose head contains `HEAD`, re-verified right before removal.)
 4. **A folder only counts as an artifact if git ignores it** (`git check-ignore`). Tracked source is never called junk.
 5. **Deletion goes to the Trash by default**, uses each tool's own cleanup command (`git worktree remove`, `docker builder prune`, `brew cleanup`, ...), defaults to dry-run, and re-checks every item right before acting (see [Clean up safely](#clean-up-safely)).
 6. **Symlinks are never followed** during walks or size calculations.

@@ -709,3 +709,66 @@ fn no_gh_and_offline_never_run_gh() {
     }
     assert!(gh.calls().is_empty(), "{:?}", gh.calls());
 }
+
+fn git_in(fx: &Fixture, dir: &str, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .args(["-C", fx.code().join(dir).to_str().unwrap()])
+        .args(args)
+        .env("HOME", fx.dest.join("home"))
+        .env("GIT_CONFIG_GLOBAL", fx.dest.join("gitconfig"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@t")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@t")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn a_pr_that_got_more_commits_after_head_still_covers_it_and_pushed_names_are_used() {
+    let fx = Fixture::new();
+    let gh = FakeGh::new(&fx);
+    let head = rev(&fx, "app-unpushed", "HEAD");
+    // A commit on top of HEAD (like a teammate's push to the PR branch),
+    // present locally but on no branch.
+    let later = git_in(
+        &fx,
+        "app",
+        &[
+            "commit-tree",
+            &format!("{head}^{{tree}}"),
+            "-p",
+            &head,
+            "-m",
+            "later",
+        ],
+    );
+    gh.respond(9, &later);
+    // The branch was pushed under another name.
+    git_in(
+        &fx,
+        "app",
+        &[
+            "config",
+            "branch.unpushed.merge",
+            "refs/heads/scott/unpushed",
+        ],
+    );
+    let w = &scan_with_gh(&fx, &gh, &[])["app-unpushed"];
+    assert_eq!(w["status"], "REMOVABLE", "{w}");
+    assert_eq!(w["reason"], "clean, squash-merged in PR #9");
+    assert!(
+        gh.calls()
+            .iter()
+            .any(|c| c.contains("--head scott/unpushed ")),
+        "{:?}",
+        gh.calls()
+    );
+}
