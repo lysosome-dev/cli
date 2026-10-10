@@ -21,6 +21,8 @@ pub enum Phase {
     /// Progress-only: [`Phase::Git`] and [`Phase::Size`] running concurrently.
     /// Each work item of either phase advances it.
     Analyze,
+    /// Project artifacts in main repos: ignore-check, last activity, sizing.
+    Artifacts,
 }
 
 impl Phase {
@@ -31,6 +33,7 @@ impl Phase {
             Phase::Size => "size",
             Phase::IgnoreCheck => "ignore-check",
             Phase::Analyze => "analyze",
+            Phase::Artifacts => "artifacts",
         }
     }
 }

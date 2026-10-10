@@ -7,17 +7,21 @@
 //! * [`system`] — Milestone 3: caches, AI models, Docker, Xcode, Android, editors.
 //! * [`artifacts`] — artifact folder names and the `git check-ignore` gate.
 //! * [`worktree`] — Milestone 1: worktree discovery, analysis, classification.
-//! * [`detector`] — the [`detector::Detector`] trait future scanners implement.
+//! * [`projects`] — Milestone 2: project artifacts + worktrees from one shared walk.
+//! * [`detector`] — the [`detector::Detector`] trait every scanner implements.
+//! * [`detectors`] — the detector registry and the combined-report runner.
 //! * [`model`] — findings, tiers, statuses and the versioned JSON [`model::Report`].
 //! * [`progress`] — progress hooks the CLI renders.
 //! * [`error`] — the crate error type.
 
 pub mod artifacts;
 pub mod detector;
+pub mod detectors;
 pub mod error;
 pub mod git;
 pub mod model;
 pub mod progress;
+pub mod projects;
 pub mod size;
 pub mod system;
 pub mod walk;

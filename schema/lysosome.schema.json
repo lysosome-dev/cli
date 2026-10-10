@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/lysosome-dev/cli/schema/lysosome.schema.json",
   "title": "lysosome report",
-  "description": "Output of `lysosome <command> --json`. Versioned by schema_version; only additive changes happen within a major version, so consumers must ignore unknown properties.",
+  "description": "Output of `lysosome <command> --json` (`scan` or `worktrees`). Versioned by schema_version; only additive changes happen within a major version, so consumers must ignore unknown properties.",
   "type": "object",
   "required": [
     "schema_version",
@@ -124,7 +124,11 @@
           "minLength": 1
         },
         "category": { "$ref": "#/$defs/category" },
-        "kind": { "type": "string", "minLength": 1 },
+        "kind": {
+          "description": "Finer-grained type: \"worktree\"; for artifacts the folder name (\"node_modules\", \"target\", \".venv\", ...).",
+          "type": "string",
+          "minLength": 1
+        },
         "path": { "$ref": "#/$defs/path" },
         "size_bytes": {
           "description": "Allocated bytes on disk (like du); hard links counted once.",
@@ -166,6 +170,20 @@
             }
           },
           "then": { "properties": { "details": { "$ref": "#/$defs/system_details" } } }
+        },
+        {
+          "if": { "properties": { "category": { "const": "artifacts" } } },
+          "then": {
+            "properties": {
+              "details": { "$ref": "#/$defs/artifact_details" },
+              "cleanup": {
+                "oneOf": [
+                  { "type": "null" },
+                  { "type": "object", "required": ["action"], "properties": { "action": { "const": "trash" } } }
+                ]
+              }
+            }
+          }
         },
         {
           "description": "Only REMOVABLE findings carry a cleanup command.",
@@ -250,6 +268,23 @@
             }
           }
         }
+      }
+    },
+    "artifact_details": {
+      "description": "A git-ignored build/dependency folder inside a project (category artifacts). Status is the project's: REMOVABLE when idle >= dormant_after_days (activity = newest of last commit, git index/HEAD/reflog mtimes and uncommitted-file mtimes), ACTIVE otherwise. REVIEW when no activity is known or `git status` failed, and (with tier review, no cleanup) when the folder contains a .git checkout. Artifacts inside dormant worktrees are reported only as part of the worktree finding, so totals never double count.",
+      "type": "object",
+      "required": ["project", "project_kind", "idle_days", "relative_path"],
+      "properties": {
+        "project": {
+          "description": "Root of the repository (or active worktree) that owns the folder.",
+          "$ref": "#/$defs/path"
+        },
+        "project_kind": { "enum": ["repo", "worktree"] },
+        "idle_days": {
+          "description": "Whole days since the project's last activity (newest of last commit and git index/HEAD/reflog mtimes); null if unknown.",
+          "type": ["integer", "null"]
+        },
+        "relative_path": { "description": "Folder path relative to the project root.", "type": "string" }
       }
     },
     "stale_metadata": {

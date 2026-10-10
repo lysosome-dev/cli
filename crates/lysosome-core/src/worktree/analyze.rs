@@ -30,10 +30,7 @@ pub(crate) fn read_pre_git(c: &Candidate) -> PreGit {
     if !gd.is_dir() {
         return PreGit::default();
     }
-    let stamp_secs = ["index", "logs/HEAD", "HEAD"]
-        .iter()
-        .map(|f| mtime_secs(&gd.join(f)))
-        .fold(0.0, f64::max);
+    let stamp_secs = git_stamp_secs(gd);
     let branch = Some(read_branch(&gd.join("HEAD")));
     let (main_repo, common_dir) = match fs::read_to_string(gd.join("commondir")) {
         Ok(cd) => {
@@ -73,8 +70,44 @@ fn read_branch(head: &Path) -> String {
     }
 }
 
+/// Max mtime (seconds since epoch, symlinks not followed) of a git dir's `index`, `logs/HEAD` and
+/// `HEAD`; 0 if none exist. Read before running git (safety rule 2). Shared by
+/// worktrees and main repos so both use the same staleness rule.
+pub(crate) fn git_stamp_secs(git_dir: &Path) -> f64 {
+    ["index", "logs/HEAD", "HEAD"]
+        .iter()
+        .map(|f| mtime_secs(&git_dir.join(f)))
+        .fold(0.0, f64::max)
+}
+
+/// `max(stamp_secs, last commit time)` via `git log -1 --format=%ct` in `dir`.
+pub(crate) fn activity_secs(git: &Git, dir: &Path, stamp_secs: f64) -> f64 {
+    let log = git.run(dir, ["log", "-1", "--format=%ct"]);
+    if log.success {
+        if let Ok(ct) = log.text().parse::<u64>() {
+            return stamp_secs.max(ct as f64);
+        }
+    }
+    stamp_secs
+}
+
+/// Whole idle days and the activity time; `(None, None)` when `activity_secs` is 0.
+pub(crate) fn idle(activity_secs: f64, now: SystemTime) -> (Option<i64>, Option<SystemTime>) {
+    if activity_secs <= 0.0 {
+        return (None, None);
+    }
+    let now_secs = now
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    (
+        Some(((now_secs - activity_secs) / DAY).floor() as i64),
+        Some(UNIX_EPOCH + Duration::from_secs_f64(activity_secs)),
+    )
+}
+
 fn mtime_secs(p: &Path) -> f64 {
-    fs::metadata(p)
+    fs::symlink_metadata(p)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
@@ -140,25 +173,8 @@ pub(crate) fn analyze(
     now: SystemTime,
 ) -> Analysis {
     let wt = &c.path;
-    let mut activity = pre.stamp_secs;
-    let log = git.run(wt, ["log", "-1", "--format=%ct"]);
-    if log.success {
-        if let Ok(ct) = log.text().parse::<u64>() {
-            activity = activity.max(ct as f64);
-        }
-    }
-    let now_secs = now
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0);
-    let (idle_days, last_activity) = if activity > 0.0 {
-        (
-            Some(((now_secs - activity) / DAY).floor() as i64),
-            Some(UNIX_EPOCH + Duration::from_secs_f64(activity)),
-        )
-    } else {
-        (None, None)
-    };
+    let activity = activity_secs(git, wt, pre.stamp_secs);
+    let (idle_days, last_activity) = idle(activity, now);
 
     // Pin the options that decide "clean" so user config (e.g.
     // status.showUntrackedFiles=no) can't hide work.

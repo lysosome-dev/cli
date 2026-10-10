@@ -10,7 +10,7 @@ Claude Code, Cursor and parallel agents create git worktrees constantly, and not
 
 `lysosome` shows you where the disk went, labels every item by how safe it is to delete, and (soon) cleans it up safely.
 
-> 🚧 Under active development. The worktree scanner and the cache / AI model / Docker / Xcode scanner are here; project artifacts and safe cleanup are next. See [docs/SPEC.md](docs/SPEC.md).
+> 🚧 Under active development. `lysosome scan` (idle project artifacts + dormant worktrees) and `lysosome caches` (package caches, AI models, Docker, Xcode) are here; safe cleanup is next. See [docs/SPEC.md](docs/SPEC.md).
 
 <p align="center"><img src="docs/assets/worktrees.svg" alt="lysosome worktrees: dormant worktrees grouped by how safe they are to remove" width="860"></p>
 
@@ -53,6 +53,53 @@ lysosome completions fish > ~/.config/fish/completions/lysosome.fish            
 `powershell` and `elvish` work too.
 
 ## Quick start
+
+```bash
+lysosome scan                            # idle project artifacts + worktrees in your home folder
+lysosome scan ~/code ~/.worktrees        # scan specific folders (faster)
+lysosome scan --days 180                 # only call projects idle 180+ days dormant
+lysosome scan --all                      # also list active items
+lysosome scan --json | jq .summary       # machine-readable output
+```
+
+```text
+  81 projects untouched for 30+ days are holding 49.4 GB of dependencies and build output.
+
+    53.2 GB  reclaimable now         REMOVABLE items in every section
+     5.7 GB  regenerable             cheap to rebuild (build output, caches, merged worktrees)
+    47.5 GB  regenerable_expensive   costly to get back (dependencies to re-download)
+    13.2 GB  review                  a human should look first
+    Tier totals cover every idle item; each byte is counted once.
+
+  ── Git worktrees  17.0 GB idle in 55 items of 105
+     (the same table as `lysosome worktrees`, below)
+
+  ── Project build & dependency output  49.4 GB idle in 383 items of 448
+
+    STATUS     TIER       SIZE  IDLE  KIND          PATH
+  ~/code/augie  3.6 GB · idle 467d
+    REMOVABLE  costly   1.8 GB  467d  node_modules  node_modules
+    REMOVABLE  costly   1.3 GB  467d  node_modules  packages/web-app/node_modules
+    REMOVABLE  costly   186 MB  467d  node_modules  packages/remotion-lambda/node_modules
+    REMOVABLE  cheap   27.5 MB  467d  build         packages/web-app/build
+    REMOVABLE  cheap    7.9 MB  467d  dist          packages/components/dist
+    … 8 more folders (116 MB)
+  ~/code/rust-engine  2.1 GB · idle 212d
+    REMOVABLE  cheap    2.1 GB  212d  target        target
+  … 79 more (use --top N)
+
+  Scanned 22,055 folders under ~/code, ~/.worktrees in 34.9s. Nothing was changed.
+```
+
+### How `scan` decides
+
+- **Artifacts** are the git-ignored folders `node_modules`, `.venv`, `venv`, `target`, `.next`, `.nuxt`, `.svelte-kit`, `.turbo`, `dist`, `build`, `.gradle`, `Pods`, `.dart_tool`, `.build`, `coverage`, `.parcel-cache`, `.expo` (and `DerivedData`) inside any repository under the roots. A folder only counts if `git check-ignore` confirms it, so a tracked `build/` is never touched. Symlinks are never followed.
+- **Staleness** is per project: the newest of its last commit and its git index / `HEAD` / reflog timestamps. Artifacts of a project idle `--days`+ (default 30) are `REMOVABLE`; otherwise `ACTIVE`.
+- **Tiers**: installed dependencies (`node_modules`, `.venv`, `venv`, `Pods`) are `regenerable_expensive` (you'll re-download them); everything else is `regenerable` build output.
+- **No double counting**: artifacts inside a dormant worktree are part of that worktree's row, never listed again; each folder belongs to its innermost repository; nested artifact folders fold into the outer one.
+- Rows group by project, largest first (top 5 folders per project; `--top` counts projects).
+
+`lysosome worktrees` is the worktree section on its own:
 
 ```bash
 lysosome worktrees                       # scan your home folder
@@ -108,12 +155,12 @@ Squash-merged branches show as `REVIEW` (git can't tell that a squash merge land
 
 | Flag | Default | |
 |---|---|---|
-| `--days N` | `30` | Idle days before a worktree counts as dormant |
+| `--days N` | `30` | Idle days before a project or worktree counts as dormant |
 | `--depth N` | `8` | Maximum folder depth to search for repositories |
 | `--all` | | Also list active worktrees |
-| `--top N` | `30` | Rows to show in the table |
+| `--top N` | `30` | Rows (or, in `scan`, projects) to show per section |
 | `--json` | | Print the versioned JSON report instead of a table |
-| `--profile` | | Print walk / git / size timings to stderr |
+| `--profile` | | Print phase (walk / git / size / artifacts) and per-detector timings to stderr |
 | `--no-color` | | Disable color (`NO_COLOR` is honored too; color is off when piped) |
 
 ## What it finds: caches, AI models, Docker, Xcode
@@ -164,7 +211,7 @@ Tiers: **cache** (`regenerable`) is refilled on demand; **costly** (`regenerable
       "reason": "clean, merged into origin/main",
       "last_activity": "2026-07-12T18:04:11Z",
       "details": { "branch": "feat/cost-analytics", "unpushed": 0, "changed": 0, "untracked": 0, "artifact_bytes": 3000000000, "...": "..." },
-      "cleanup": { "command": ["git", "-C", "/Users/me/code/app", "worktree", "remove", "/Users/me/code/app-worktrees/marinating-stream"] }
+      "cleanup": { "action": "command", "command": ["git", "-C", "/Users/me/code/app", "worktree", "remove", "/Users/me/code/app-worktrees/marinating-stream"] }
     }
   ],
   "stale_metadata": [],
@@ -175,7 +222,24 @@ Tiers: **cache** (`regenerable`) is refilled on demand; **costly** (`regenerable
 - Sizes are allocated bytes on disk (like `du`), with hard links counted once. APFS clones may be over-counted.
 - `summary.reclaimable_bytes` counts `REMOVABLE` findings only: space you can get back now with no risk.
 - `summary.by_tier` and `summary.by_category` sum every dormant (non-`ACTIVE`) finding.
-- `cleanup` is `null` for anything that isn't `REMOVABLE`.
+- `cleanup` is `null` for anything that isn't `REMOVABLE`. Otherwise `action` says how: `"command"` runs `command` (the tool's own cleanup, e.g. `git worktree remove`); `"trash"` moves `paths` to the Trash (artifact folders).
+- `lysosome scan --json` includes every finding from every section. Artifact findings have `category: "artifacts"`, `kind` set to the folder name (`node_modules`, `target`, ...), and `details` with `project`, `project_kind`, `idle_days` and `relative_path`:
+
+```json
+{
+  "id": "node_modules:/Users/me/code/augie/node_modules",
+  "category": "artifacts",
+  "kind": "node_modules",
+  "path": "/Users/me/code/augie/node_modules",
+  "size_bytes": 1800000000,
+  "tier": "regenerable_expensive",
+  "status": "REMOVABLE",
+  "reason": "git-ignored; project idle 467 days",
+  "last_activity": "2025-06-30T17:12:40Z",
+  "details": { "project": "/Users/me/code/augie", "project_kind": "repo", "idle_days": 467, "relative_path": "node_modules" },
+  "cleanup": { "action": "trash", "paths": ["/Users/me/code/augie/node_modules"] }
+}
+```
 
 ## Safety rules
 
@@ -201,6 +265,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 - `crates/lysosome-core`: discovery, analysis, sizing and classification. Returns data and never prints.
 - `crates/lysosome-cli`: the `lysosome` binary (arguments, table/JSON output, progress).
 - `tests/fixtures/make_worktrees.sh`: builds a throwaway tree of worktrees in every state (isolated `HOME` / `GIT_CONFIG_GLOBAL`).
+- `tests/fixtures/make_projects.sh`: old and fresh repos with ignored and tracked artifact folders, symlinks and worktrees for `lysosome scan`.
+- New scanners implement `lysosome_core::detector::Detector` and are registered in `lysosome_core::detectors::all_detectors()`; `scan` renders any category without CLI changes.
 - `reference/wtscan.py`: the Python prototype the Rust port must agree with.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and how releases are cut, [SECURITY.md](SECURITY.md) to report a vulnerability, and [CHANGELOG.md](CHANGELOG.md) for what changed.
