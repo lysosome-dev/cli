@@ -28,7 +28,7 @@ clap_complete = "4.6"
 clap_mangen = "0.3"
 # Raw key reads for `clean --interactive` (already in the tree via indicatif).
 console = { version = "0.16", default-features = false, features = ["std", "ansi-parsing"] }
-dirs = "6"
+dirs = "7"
 indicatif = "0.18"
 libc = "0.2"
 lysosome-core = { path = "../lysosome-core", version = "0.3.0" }
@@ -37,7 +37,7 @@ serde_json = "1"
 
 [dev-dependencies]
 assert_cmd = "2.2"
-jsonschema = { version = "0.38", default-features = false }
+jsonschema = { version = "0.58", default-features = false }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 tempfile = "3"
