@@ -74,7 +74,8 @@ Maintainers cut releases with [cargo-dist](https://axodotdev.github.io/cargo-dis
    `scripts/dist-extras.sh`), `lysosome-installer.sh`, `lysosome.rb` and
    checksums, and publishes the GitHub Release.
 4. [lysosome-dev/homebrew-tap](https://github.com/lysosome-dev/homebrew-tap)
-   picks up the release within 30 minutes. To publish right away:
+   checks for new releases every 30 minutes. To publish right away (and to
+   be safe if GitHub ever paused the schedule):
    `gh workflow run -R lysosome-dev/homebrew-tap update-formula.yml`.
 
 After editing `dist-workspace.toml`, run `dist generate` to refresh

@@ -24,7 +24,7 @@ macOS (Apple silicon and Intel) and Linux (x86_64 and arm64). `git` must be on y
 brew install lysosome-dev/tap/lysosome
 ```
 
-**Install script** (puts `lysosome` in `~/.local/bin`; set `LYSOSOME_INSTALL_DIR` to choose another folder):
+**Install script** (puts `lysosome` in `$XDG_BIN_HOME` or `~/.local/bin` and adds it to your `PATH`; set `LYSOSOME_INSTALL_DIR` to choose another folder, `LYSOSOME_NO_MODIFY_PATH=1` to leave your shell config alone):
 
 ```bash
 curl -fsSL https://lysosome.dev/install.sh | sh

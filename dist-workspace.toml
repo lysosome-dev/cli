@@ -32,5 +32,3 @@ install-updater = false
 # right before `dist build` (run `scripts/dist-extras.sh` to build them locally)
 include = ["target/dist-extras/man/", "target/dist-extras/completions/"]
 github-build-setup = "../build-setup.yml"
-# TEMP: build all artifacts on PRs to validate the matrix
-pr-run-mode = "upload"
