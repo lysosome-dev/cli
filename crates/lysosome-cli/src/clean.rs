@@ -466,12 +466,12 @@ fn confirm(p: &Painter) -> Result<bool> {
 }
 
 pub(crate) fn tier_badge(t: Tier, p: &Painter) -> String {
-    let (label, style) = match t {
-        Tier::Regenerable => ("cheap", ui::tier_style(t)),
-        Tier::RegenerableExpensive => ("costly", ui::tier_style(t)),
-        Tier::Review => ("review", ui::tier_style(t)),
+    let label = match t {
+        Tier::Regenerable => "cheap",
+        Tier::RegenerableExpensive => "costly",
+        Tier::Review => "review",
     };
-    p.paint(pad_right(label, 6), style)
+    p.paint(pad_right(label, 6), ui::tier_style(t))
 }
 
 fn action_label(i: &PlanItem) -> &'static str {

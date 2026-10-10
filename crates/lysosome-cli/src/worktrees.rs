@@ -228,7 +228,10 @@ pub fn render_body(
         writeln!(
             o,
             "    {}  {}  {}",
-            p.paint(pad_left(&rem, w), Style::new().green().bold()),
+            p.paint(
+                pad_left(&rem, w),
+                crate::ui::tier_style(lysosome_core::model::Tier::Regenerable).bold(),
+            ),
             pad_right("safe to remove now", 26),
             p.dim(format!(
                 "{} clean, merged or pushed",
@@ -312,7 +315,7 @@ pub fn render_body(
                 }
             };
             let size_style = if w.status == Status::Removable {
-                Style::new().green()
+                crate::ui::tier_style(lysosome_core::model::Tier::Regenerable)
             } else {
                 Style::new()
             };

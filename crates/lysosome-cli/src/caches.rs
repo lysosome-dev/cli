@@ -125,12 +125,12 @@ fn render_profile(out: &RunOutput, total: Duration, p: &Painter) -> String {
 }
 
 fn tier_badge(t: Tier, p: &Painter) -> String {
-    let (label, style) = match t {
-        Tier::Regenerable => ("cache", crate::ui::tier_style(t)),
-        Tier::RegenerableExpensive => ("costly", crate::ui::tier_style(t)),
-        Tier::Review => ("review", crate::ui::tier_style(t)),
+    let label = match t {
+        Tier::Regenerable => "cache",
+        Tier::RegenerableExpensive => "costly",
+        Tier::Review => "review",
     };
-    p.paint(pad_right(label, 6), style)
+    p.paint(pad_right(label, 6), crate::ui::tier_style(t))
 }
 
 /// "today", "3d ago", "5mo ago", "2y ago", or "–".
@@ -220,19 +220,19 @@ fn render_table(
         let rows = [
             (
                 by_tier(Tier::Regenerable),
-                Style::new().green().bold(),
+                crate::ui::tier_style(Tier::Regenerable).bold(),
                 "cheap to rebuild",
                 "caches and build output, refilled on demand",
             ),
             (
                 by_tier(Tier::RegenerableExpensive),
-                Style::new().yellow().bold(),
+                crate::ui::tier_style(Tier::RegenerableExpensive).bold(),
                 "costly to get back",
                 "models, images, simulators: re-download to use again",
             ),
             (
                 by_tier(Tier::Review),
-                Style::new().magenta().bold(),
+                crate::ui::tier_style(Tier::Review).bold(),
                 "needs review",
                 "archives, volumes, shared data",
             ),

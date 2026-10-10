@@ -59,22 +59,64 @@ impl Depth {
     }
 }
 
-/// The brand color of a safety tier (lysosome-dev/brand, `color.tier.*`):
-/// regenerable = GFP mint `#6ef0b0`, expensive = amber `#ffc15e`, review =
-/// DAPI blue-violet `#92a9ff`. Exact on truecolor terminals, the nearest
-/// xterm-256 color on 256-color ones (121, 215, 111), else green / yellow /
-/// blue.
-pub fn tier_style(t: lysosome_core::model::Tier) -> Style {
-    tier_style_at(t, Depth::current())
+/// Terminal background, for the light-theme tier hues. `LYSOSOME_THEME`
+/// (`light` / `dark`) wins; else `COLORFGBG` (set by rxvt, iTerm2, Konsole...:
+/// `fg;bg`, background 7 or 15 = light); else dark, the brand default.
+fn light_background() -> bool {
+    static L: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *L.get_or_init(|| {
+        is_light(
+            std::env::var("LYSOSOME_THEME").ok().as_deref(),
+            std::env::var("COLORFGBG").ok().as_deref(),
+        )
+    })
 }
 
-pub fn tier_style_at(t: lysosome_core::model::Tier, d: Depth) -> Style {
+fn is_light(theme: Option<&str>, colorfgbg: Option<&str>) -> bool {
+    match theme.map(str::to_ascii_lowercase).as_deref() {
+        Some("light") => return true,
+        Some("dark") => return false,
+        _ => {}
+    }
+    colorfgbg
+        .and_then(|v| v.rsplit(';').next())
+        .is_some_and(|bg| matches!(bg.trim(), "7" | "15"))
+}
+
+/// The brand color of a safety tier (lysosome-dev/brand, `color.tier.*`):
+/// regenerable = GFP mint, expensive = amber, review = DAPI blue-violet.
+/// Dark theme `#6ef0b0` / `#ffc15e` / `#92a9ff` (xterm 121 / 215 / 111);
+/// light theme `#0b8a57` / `#a35f00` / `#3a57d1` (xterm 29 / 130 / 62).
+/// Exact on truecolor terminals, nearest xterm-256 color on 256-color ones,
+/// else green / yellow / bright blue (which follow the terminal's palette).
+pub fn tier_style(t: lysosome_core::model::Tier) -> Style {
+    tier_style_at(t, Depth::current(), light_background())
+}
+
+pub fn tier_style_at(t: lysosome_core::model::Tier, d: Depth, light: bool) -> Style {
     use lysosome_core::model::Tier;
     use owo_colors::{AnsiColors, XtermColors};
-    let (rgb, xterm, basic) = match t {
-        Tier::Regenerable => ((0x6e, 0xf0, 0xb0), 121u8, AnsiColors::Green),
-        Tier::RegenerableExpensive => ((0xff, 0xc1, 0x5e), 215, AnsiColors::Yellow),
-        Tier::Review => ((0x92, 0xa9, 0xff), 111, AnsiColors::Blue),
+    let ((dark_rgb, dark_x), (light_rgb, light_x), basic) = match t {
+        Tier::Regenerable => (
+            ((0x6e, 0xf0, 0xb0), 121u8),
+            ((0x0b, 0x8a, 0x57), 29u8),
+            AnsiColors::Green,
+        ),
+        Tier::RegenerableExpensive => (
+            ((0xff, 0xc1, 0x5e), 215),
+            ((0xa3, 0x5f, 0x00), 130),
+            AnsiColors::Yellow,
+        ),
+        Tier::Review => (
+            ((0x92, 0xa9, 0xff), 111),
+            ((0x3a, 0x57, 0xd1), 62),
+            AnsiColors::BrightBlue,
+        ),
+    };
+    let (rgb, xterm) = if light {
+        (light_rgb, light_x)
+    } else {
+        (dark_rgb, dark_x)
     };
     match d {
         Depth::TrueColor => Style::new().truecolor(rgb.0, rgb.1, rgb.2),
@@ -273,16 +315,29 @@ mod tests {
         );
         assert_eq!(Depth::from_env(None, Some("xterm")), Depth::Basic);
         let p = Painter::new(true);
-        let s = |t, d| p.paint("x", tier_style_at(t, d));
+        let s = |t, d, light| p.paint("x", tier_style_at(t, d, light));
         assert_eq!(
-            s(Tier::Regenerable, Depth::TrueColor),
+            s(Tier::Regenerable, Depth::TrueColor, false),
             "\x1b[38;2;110;240;176mx\x1b[0m"
         );
         assert_eq!(
-            s(Tier::RegenerableExpensive, Depth::Xterm256),
+            s(Tier::Regenerable, Depth::TrueColor, true),
+            "\x1b[38;2;11;138;87mx\x1b[0m"
+        );
+        assert_eq!(
+            s(Tier::RegenerableExpensive, Depth::Xterm256, false),
             "\x1b[38;5;215mx\x1b[0m"
         );
-        assert_eq!(s(Tier::Review, Depth::Basic), "\x1b[34mx\x1b[0m");
+        assert_eq!(
+            s(Tier::RegenerableExpensive, Depth::Xterm256, true),
+            "\x1b[38;5;130mx\x1b[0m"
+        );
+        assert_eq!(s(Tier::Review, Depth::Basic, false), "\x1b[94mx\x1b[0m");
+        assert!(is_light(Some("light"), None));
+        assert!(!is_light(Some("dark"), Some("0;15")));
+        assert!(is_light(None, Some("0;15")));
+        assert!(!is_light(None, Some("15;0")));
+        assert!(!is_light(None, None));
         // NO_COLOR / non-TTY: plain.
         assert_eq!(
             Painter::new(false).paint("x", tier_style(Tier::Review)),

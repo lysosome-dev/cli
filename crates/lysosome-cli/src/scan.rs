@@ -21,7 +21,7 @@ use owo_colors::Style;
 
 use crate::progress::Spinner;
 use crate::ui::{
-    self, human_bytes, pad_left, pad_right, plural, thousands, Painter, PathShortener,
+    self, human_bytes, pad_left, pad_right, plural, thousands, tier_style, Painter, PathShortener,
 };
 use crate::worktrees::{self, View};
 use crate::{GlobalArgs, ScanArgs, ScanCmdArgs};
@@ -170,10 +170,6 @@ fn tier_badge(t: Tier) -> &'static str {
     }
 }
 
-fn tier_style(t: Tier) -> Style {
-    crate::ui::tier_style(t)
-}
-
 /// `details.idle_days` when the detector computed it (same clock as the
 /// status), else derived from `last_activity`.
 fn idle_days(f: &Finding, now: SystemTime) -> Option<u64> {
@@ -290,7 +286,7 @@ fn tier_summary(o: &mut String, report: &Report, p: &Painter) {
             human_bytes(s.reclaimable_bytes),
             "reclaimable now",
             "REMOVABLE items in every section".into(),
-            Style::new().green().bold(),
+            tier_style(Tier::Regenerable).bold(),
         ),
         (
             human_bytes(s.by_tier[&Tier::Regenerable]),

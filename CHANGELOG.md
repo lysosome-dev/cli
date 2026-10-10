@@ -23,8 +23,10 @@ All notable changes to this project are documented here. The format follows
 
 - Tier colors match the brand (#24): regenerable is GFP mint, expensive is
   amber, review is DAPI blue-violet (exact on truecolor terminals, nearest
-  xterm-256 color on 256-color ones, else green / yellow / blue), in
-  `scan`, `caches`, `clean` and the `REMOVABLE` / `REVIEW` statuses.
+  xterm-256 color on 256-color ones, else green / yellow / bright blue), in
+  `scan`, `caches`, `clean` and the `REMOVABLE` / `REVIEW` statuses. Light
+  terminals (`COLORFGBG`, or `LYSOSOME_THEME=light`) get the brand's
+  light-theme hues.
   `NO_COLOR` and piped output stay plain; `--json` is unchanged.
 
 ### Added
