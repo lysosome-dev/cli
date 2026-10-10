@@ -217,7 +217,7 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
             errors::fail(
                 "all_detectors_failed",
                 "every detector failed",
-                "run again with --profile to see which, and check that the folders exist",
+                "check that the folders exist and that `git --version` works; `lysosome caches` checks the machine-wide part on its own",
             )
         }));
     }

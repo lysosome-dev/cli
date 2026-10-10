@@ -312,7 +312,11 @@ fn main() -> ExitCode {
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::FAILURE,
                 Err(e) => {
-                    eprintln!("error: {e}");
+                    // stdout itself failed, so even a --json error goes to stderr.
+                    eprintln!("error: could not write the output: {e}");
+                    eprintln!(
+                        "  hint: check free disk space and the file or pipe you are writing to"
+                    );
                     ExitCode::FAILURE
                 }
             }
@@ -393,7 +397,21 @@ fn quick_start(p: &ui::Painter) -> String {
 /// print as usual.
 fn usage_error(e: clap::Error) -> ExitCode {
     use clap::error::ErrorKind;
-    let wants_json = std::env::args_os().any(|a| a == "--json");
+    // `--json` before any `--`, for a subcommand that has a JSON mode.
+    let args: Vec<std::ffi::OsString> = std::env::args_os()
+        .skip(1)
+        .take_while(|a| a != "--")
+        .collect();
+    let has_json_mode = args
+        .iter()
+        .find(|a| !a.to_string_lossy().starts_with('-'))
+        .is_some_and(|c| {
+            matches!(
+                c.to_str(),
+                Some("scan" | "worktrees" | "caches" | "system" | "clean")
+            )
+        });
+    let wants_json = has_json_mode && args.iter().any(|a| a == "--json");
     let informational = matches!(
         e.kind(),
         ErrorKind::DisplayHelp
@@ -403,17 +421,32 @@ fn usage_error(e: clap::Error) -> ExitCode {
     if !wants_json || informational {
         e.exit();
     }
+    // clap's text: "error: ...", detail lines, a "tip: ..." line, usage.
     let text = e.render().to_string();
-    let message = text
-        .lines()
-        .next()
-        .unwrap_or("invalid arguments")
-        .trim_start_matches("error: ")
-        .to_string();
+    let mut message = Vec::new();
+    let mut tip = None;
+    for line in text.lines() {
+        let l = line.trim();
+        if l.starts_with("Usage:") || l.starts_with("For more information") {
+            break;
+        }
+        if let Some(t) = l.strip_prefix("tip:") {
+            tip = Some(t.trim().to_string());
+        } else if !l.is_empty() {
+            message.push(l.trim_start_matches("error: ").to_string());
+        }
+    }
+    let message = if message.is_empty() {
+        "invalid arguments".to_string()
+    } else {
+        message.join(" ")
+    };
     let err = errors::CliError {
         code: "usage",
         message,
-        hint: Some("run `lysosome help <command>` to see the options".into()),
+        hint: Some(
+            tip.unwrap_or_else(|| "run `lysosome help <command>` to see the options".into()),
+        ),
     };
     let _ = std::io::stdout().write_all(errors::json(&err).as_bytes());
     ExitCode::from(2)

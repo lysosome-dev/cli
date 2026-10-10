@@ -9,7 +9,7 @@ use serde_json::json;
 
 /// A CLI error with a code and a fix. Build with [`fail`]; anything else
 /// that reaches `main` is mapped by [`describe`].
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CliError {
     pub code: &'static str,
     pub message: String,
@@ -38,29 +38,27 @@ pub fn fail(
     .into()
 }
 
-/// Code, message and hint for any error that reached `main`.
+/// Code, message and hint for any error that reached `main`: the first
+/// error in the chain we know how to explain decides.
 pub fn describe(e: &anyhow::Error) -> CliError {
-    if let Some(c) = e.downcast_ref::<CliError>() {
-        return CliError {
-            code: c.code,
-            message: c.message.clone(),
-            hint: c.hint.clone(),
-        };
-    }
-    if let Some(core) = e.downcast_ref::<CoreError>() {
-        let (code, hint) = core_hint(core);
-        return CliError {
-            code,
-            message: format!("{e:#}"),
-            hint,
-        };
-    }
-    if let Some(io) = e.downcast_ref::<std::io::Error>() {
-        return CliError {
-            code: "io",
-            message: format!("{e:#}"),
-            hint: Some(io_hint(io)),
-        };
+    for cause in e.chain() {
+        if let Some(c) = cause.downcast_ref::<CliError>() {
+            return c.clone();
+        }
+        if let Some(core) = cause.downcast_ref::<CoreError>() {
+            return CliError {
+                code: core.code(),
+                message: format!("{e:#}"),
+                hint: Some(core.hint().into()),
+            };
+        }
+        if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+            return CliError {
+                code: "io",
+                message: format!("{e:#}"),
+                hint: Some(io_hint(io)),
+            };
+        }
     }
     CliError {
         code: "internal",
@@ -68,43 +66,6 @@ pub fn describe(e: &anyhow::Error) -> CliError {
         hint: Some(
             "this looks like a bug; please report it at https://github.com/lysosome-dev/cli/issues"
                 .into(),
-        ),
-    }
-}
-
-fn core_hint(e: &CoreError) -> (&'static str, Option<String>) {
-    match e {
-        CoreError::GitUnavailable(_) => (
-            "git_unavailable",
-            Some(
-                "install git (`xcode-select --install` on macOS) and make sure it is on PATH"
-                    .into(),
-            ),
-        ),
-        CoreError::NoValidRoots(_) => (
-            "no_valid_roots",
-            Some(
-                "check the spelling, or pass a folder that exists, e.g. `lysosome scan ~/code`"
-                    .into(),
-            ),
-        ),
-        CoreError::NoHomeDir => (
-            "no_home_dir",
-            Some(
-                "set HOME, or pass the folders to scan, e.g. `lysosome scan /path/to/code`".into(),
-            ),
-        ),
-        CoreError::ThreadPool(_) => (
-            "thread_pool",
-            Some(
-                "the system is out of threads or memory; close some programs and try again".into(),
-            ),
-        ),
-        CoreError::Shared(inner) => core_hint(inner),
-        CoreError::Io { source, .. } => ("io", Some(io_hint(source))),
-        _ => (
-            "internal",
-            Some("please report this at https://github.com/lysosome-dev/cli/issues".into()),
         ),
     }
 }
@@ -146,6 +107,8 @@ mod tests {
             CoreError::NoHomeDir.into(),
             CoreError::Shared(std::sync::Arc::new(CoreError::NoValidRoots(vec![]))).into(),
             std::io::Error::new(std::io::ErrorKind::PermissionDenied, "x").into(),
+            anyhow::Error::from(std::io::Error::new(std::io::ErrorKind::NotFound, "y"))
+                .context("reading a thing"),
             fail("needs_yes", "m", "h"),
             anyhow::anyhow!("something odd"),
         ];
@@ -163,6 +126,7 @@ mod tests {
                 "no_valid_roots",
                 "no_home_dir",
                 "no_valid_roots",
+                "io",
                 "io",
                 "needs_yes",
                 "internal"

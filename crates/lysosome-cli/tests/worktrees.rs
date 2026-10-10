@@ -775,7 +775,13 @@ fn a_pr_that_got_more_commits_after_head_still_covers_it_and_pushed_names_are_us
 
 #[test]
 fn bare_command_starts_with_a_quick_start() {
-    let out = Command::cargo_bin("lysosome").unwrap().output().unwrap();
+    let t = tempfile::tempdir().unwrap();
+    let out = Command::cargo_bin("lysosome")
+        .unwrap()
+        .env("HOME", t.path())
+        .env("GIT_CONFIG_GLOBAL", t.path().join("gitconfig"))
+        .output()
+        .unwrap();
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
     let first: Vec<&str> = text.lines().take(3).collect();
@@ -823,6 +829,7 @@ fn errors_suggest_a_fix_and_are_json_with_json() {
         ),
         (vec!["scan", "--json", "--bogus"], "usage", 2),
         (vec!["clean", "--permanent", "--json"], "needs_yes", 1),
+        (vec!["clean", "--tier", "bogus", "--json"], "usage", 2),
     ] {
         let out = run(&args);
         assert_eq!(out.status.code(), Some(status), "{args:?}");
@@ -831,5 +838,13 @@ fn errors_suggest_a_fix_and_are_json_with_json() {
         assert!(validator.is_valid(&doc), "{doc}");
         assert_eq!(doc["error"]["code"], code, "{args:?}");
         assert!(doc["error"]["hint"].as_str().is_some_and(|h| !h.is_empty()));
+        if args.contains(&"bogus") {
+            let m = doc["error"]["message"].as_str().unwrap();
+            assert!(m.contains("possible values"), "details kept: {m}");
+        }
     }
+    // No JSON mode (or after `--`): clap's normal error on stderr.
+    let out = run(&["completions", "--json"]);
+    assert!(out.stdout.is_empty());
+    assert!(!out.stderr.is_empty());
 }
