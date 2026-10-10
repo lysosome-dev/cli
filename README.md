@@ -168,8 +168,10 @@ lysosome worktrees --json | jq .summary  # machine-readable output
 **Squash merges.** Git can't tell that a branch was squash-merged on GitHub: the squash commit has a different SHA and the remote branch is usually deleted, so the worktree's commits look "unpushed, not merged". When the [GitHub CLI](https://cli.github.com) (`gh`) is installed and signed in, lysosome asks GitHub about worktrees that are `REVIEW` *only* for that reason (clean, unlocked, on a branch):
 
 ```
-gh pr list --repo <host/owner/repo> --state merged --head <branch> --json number,headRefOid,mergedAt,url
+gh pr list --repo <host/owner/repo> --state merged --head <branch> --json number,headRefOid,mergedAt,url,baseRefName,headRepositoryOwner
 ```
+
+Only PRs merged into the repository's default branch (`gh repo view --json defaultBranchRef`), from a branch of the repository itself (not a fork with the same branch name), count. The repository is the one the branch tracks (else `origin`); forks whose PRs live upstream and SSH host aliases aren't matched and simply stay `REVIEW`.
 
 - A merged PR whose last commit is **exactly** the worktree's `HEAD` makes it `REMOVABLE`: "clean, squash-merged in PR #123" (JSON: `details.merged_pr {number, url}`).
 - A merged PR with a different head keeps it `REVIEW` with a clearer reason: "PR #123 was merged, but 2 local commits came after it".

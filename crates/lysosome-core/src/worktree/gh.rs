@@ -10,6 +10,9 @@
 //!     --json number,headRefOid,mergedAt,url
 //! ```
 //!
+//! Only PRs merged into the repository's default branch, from a branch in
+//! the repository itself (not a fork with the same branch name), count.
+//!
 //! * A merged PR whose `headRefOid` **is** the worktree's HEAD means every
 //!   local commit was in that PR, which was merged: the (clean, unlocked)
 //!   worktree becomes `REMOVABLE`, "clean, squash-merged in PR #123".
@@ -73,6 +76,10 @@ pub(crate) struct Pr {
     pub head: String,
     pub merged_at: String,
     pub url: String,
+    /// Branch it was merged into.
+    pub base: String,
+    /// Owner of the repository the PR's branch lives in.
+    pub head_owner: String,
 }
 
 /// What GitHub says about one worktree.
@@ -83,8 +90,11 @@ pub(crate) enum Verdict {
     /// A PR from this branch was merged, but HEAD isn't its head: stays
     /// `REVIEW` with this reason.
     MergedEarlier(String),
-    /// Nothing known (no merged PR, no GitHub remote, gh failed...).
+    /// Nothing to go on: no GitHub remote, no matching merged PR.
     Unknown,
+    /// GitHub could not be asked (not signed in, timeout, offline, bad
+    /// output): the reason.
+    Unavailable(String),
 }
 
 impl Verdict {
@@ -92,7 +102,7 @@ impl Verdict {
         match self {
             Verdict::SquashMerged(pr) => Some(squash_reason(pr.number)),
             Verdict::MergedEarlier(r) => Some(r.clone()),
-            Verdict::Unknown => None,
+            Verdict::Unknown | Verdict::Unavailable(_) => None,
         }
     }
 }
@@ -113,6 +123,8 @@ pub struct Gh {
     auth: Mutex<HashMap<String, Arc<OnceLock<bool>>>>,
     /// (repo, branch) -> merged PRs (None: gh failed).
     prs: Mutex<HashMap<(String, String), PrCell>>,
+    /// repo -> default branch name (None: gh failed).
+    default_branch: Mutex<HashMap<String, Arc<OnceLock<Option<String>>>>>,
     calls: AtomicU64,
 }
 
@@ -147,6 +159,7 @@ impl Gh {
             tools,
             auth: Mutex::default(),
             prs: Mutex::default(),
+            default_branch: Mutex::default(),
             calls: AtomicU64::new(0),
         })
     }
@@ -169,12 +182,29 @@ impl Gh {
         *cell.get_or_init(|| self.run(&["auth", "status", "--hostname", host]).is_some())
     }
 
+    /// The default branch of `repo` (`host/owner/name`).
+    fn default_branch(&self, repo: &str) -> Option<String> {
+        let cell = {
+            let mut m = self
+                .default_branch
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            m.entry(repo.to_string()).or_default().clone()
+        };
+        cell.get_or_init(|| {
+            let out = self.run(&["repo", "view", repo, "--json", "defaultBranchRef"])?;
+            let v: serde_json::Value = serde_json::from_str(&out).ok()?;
+            v.get("defaultBranchRef")?
+                .get("name")?
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        })
+        .clone()
+    }
+
     /// Merged PRs whose head branch is `branch` in `repo` (`host/owner/name`).
     fn merged_prs(&self, repo: &str, branch: &str) -> Option<Vec<Pr>> {
-        let host = repo.split('/').next()?;
-        if !self.signed_in(host) {
-            return None;
-        }
         let cell = {
             let mut m = self.prs.lock().unwrap_or_else(|e| e.into_inner());
             m.entry((repo.to_string(), branch.to_string()))
@@ -192,9 +222,9 @@ impl Gh {
                 "--head",
                 branch,
                 "--limit",
-                "30",
+                "100",
                 "--json",
-                "number,headRefOid,mergedAt,url",
+                "number,headRefOid,mergedAt,url,baseRefName,headRepositoryOwner",
             ])?;
             parse_prs(&out)
         })
@@ -214,9 +244,18 @@ impl Gh {
         let Some(repo) = github_repo(git, wt, branch) else {
             return Verdict::Unknown;
         };
-        let Some(prs) = self.merged_prs(&repo, branch) else {
-            return Verdict::Unknown;
+        let host = repo.split('/').next().unwrap_or_default();
+        if !self.signed_in(host) {
+            return Verdict::Unavailable(format!("gh is not signed in to {host}"));
+        }
+        let Some(base) = self.default_branch(&repo) else {
+            return Verdict::Unavailable(format!("gh could not read {repo}'s default branch"));
         };
+        let Some(prs) = self.merged_prs(&repo, branch) else {
+            return Verdict::Unavailable(format!("gh could not list {repo}'s merged PRs"));
+        };
+        let owner = repo.split('/').nth(1).unwrap_or_default();
+        let prs = relevant(prs, &base, owner);
         match decide(&head, &prs) {
             Decision::Squash(pr) => Verdict::SquashMerged(MergedPr {
                 number: pr.number,
@@ -272,6 +311,14 @@ impl Gh {
     }
 }
 
+/// PRs merged into `base` (the default branch) from a branch of the repo
+/// itself (`owner`), not from a fork that happens to share the branch name.
+fn relevant(prs: Vec<Pr>, base: &str, owner: &str) -> Vec<Pr> {
+    prs.into_iter()
+        .filter(|p| p.base == base && p.head_owner.eq_ignore_ascii_case(owner))
+        .collect()
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum Decision<'a> {
     /// A merged PR's head is HEAD (latest merge if several).
@@ -315,6 +362,12 @@ fn parse_prs(json: &str) -> Option<Vec<Pr>> {
                         .filter(|s| !s.is_empty())?
                         .to_string(),
                     url: p.get("url")?.as_str()?.to_string(),
+                    base: p.get("baseRefName")?.as_str()?.to_string(),
+                    head_owner: p
+                        .get("headRepositoryOwner")?
+                        .get("login")?
+                        .as_str()?
+                        .to_string(),
                 })
             })
             .collect(),
@@ -440,7 +493,22 @@ mod tests {
             head: head.into(),
             merged_at: merged_at.into(),
             url: format!("https://github.com/acme/app/pull/{number}"),
+            base: "main".into(),
+            head_owner: "acme".into(),
         }
+    }
+
+    #[test]
+    fn only_prs_into_the_default_branch_from_the_repo_itself_count() {
+        let a = "a".repeat(40);
+        let mut stacked = pr(1, &a, "2026-01-01T00:00:00Z");
+        stacked.base = "feat-a".into();
+        let mut fork = pr(2, &a, "2026-01-01T00:00:00Z");
+        fork.head_owner = "stranger".into();
+        let mut ok = pr(3, &a, "2026-01-01T00:00:00Z");
+        ok.head_owner = "ACME".into();
+        let got = relevant(vec![stacked, fork, ok.clone()], "main", "acme");
+        assert_eq!(got, vec![ok]);
     }
 
     #[test]
@@ -462,8 +530,10 @@ mod tests {
     #[test]
     fn parses_gh_json() {
         let json = r#"[
-          {"number": 12, "headRefOid": "abc", "mergedAt": "2026-01-02T03:04:05Z", "url": "u12"},
-          {"number": 13, "headRefOid": "def", "mergedAt": null, "url": "u13"},
+          {"number": 12, "headRefOid": "abc", "mergedAt": "2026-01-02T03:04:05Z", "url": "u12",
+           "baseRefName": "main", "headRepositoryOwner": {"login": "acme"}},
+          {"number": 13, "headRefOid": "def", "mergedAt": null, "url": "u13",
+           "baseRefName": "main", "headRepositoryOwner": {"login": "acme"}},
           {"number": "x"}
         ]"#;
         assert_eq!(
@@ -481,6 +551,8 @@ mod tests {
             head: head.into(),
             merged_at: merged_at.into(),
             url: url.into(),
+            base: "main".into(),
+            head_owner: "acme".into(),
         }
     }
 

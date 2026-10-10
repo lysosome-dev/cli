@@ -63,7 +63,8 @@ pub struct ScanOptions {
     /// Max concurrent git processes; `None` = `min(8, cores)`.
     pub git_concurrency: Option<usize>,
     /// Ask GitHub (via `gh`, when installed and signed in) whether
-    /// commit-safety `REVIEW` worktrees were squash-merged. Off with
+    /// commit-safety `REVIEW` worktrees were squash-merged. Off by default
+    /// in the library (no network unless asked); the CLI turns it on unless
     /// `--no-gh` / `--offline`.
     pub github: bool,
 }
@@ -77,7 +78,7 @@ impl ScanOptions {
             now: SystemTime::now(),
             git_timeout: DEFAULT_TIMEOUT,
             git_concurrency: None,
-            github: true,
+            github: false,
         }
     }
 }
@@ -378,12 +379,14 @@ pub(crate) fn analyze_found(
                     })
                     .collect()
             });
+            let git_elapsed = t.elapsed();
+            let t = Instant::now();
             let gh_calls = if opts.github {
                 apply_github(git, &mut wts)
             } else {
                 0
             };
-            (wts, t.elapsed(), gh_calls)
+            (wts, git_elapsed, (t.elapsed(), gh_calls))
         });
         let t = Instant::now();
         let measured: Vec<Measured> = candidates
@@ -401,12 +404,18 @@ pub(crate) fn analyze_found(
         (git_out, (measured, size_elapsed))
     });
     progress.finish(Phase::Analyze);
-    let (mut worktrees, git_elapsed, gh_calls) = git_out;
+    let (mut worktrees, git_elapsed, (gh_elapsed, gh_calls)) = git_out;
     let (measured, size_elapsed) = size_out;
     timings.push(PhaseTiming {
         phase: Phase::Git,
         elapsed: git_elapsed,
     });
+    if gh_calls > 0 {
+        timings.push(PhaseTiming {
+            phase: Phase::Github,
+            elapsed: gh_elapsed,
+        });
+    }
     timings.push(PhaseTiming {
         phase: Phase::Size,
         elapsed: size_elapsed,

@@ -57,7 +57,9 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 fn plan(roots: Vec<PathBuf>, home: &Path, sel: &Selection) -> clean::Plan {
-    let ctx = ScanContext::new(roots, home.to_path_buf());
+    let mut ctx = ScanContext::new(roots, home.to_path_buf());
+    // Only the squash scenario has a (fake) gh and a GitHub remote.
+    ctx.github = true;
     let run = detectors::run(&detectors::project_detectors(), &ctx);
     clean::plan(&run.report.findings, sel, PlanOptions::default())
 }
@@ -252,7 +254,7 @@ fn squash_merged_worktrees_are_reverified(tmp: &Path) {
     fs::write(
         &gh,
         format!(
-            "#!/bin/sh\necho \"$*\" >> '{log}'\ncase \"$1\" in\n  auth) exit 0;;\n  pr) echo '[{{\"number\":42,\"headRefOid\":\"{head}\",\"mergedAt\":\"2026-01-01T00:00:00Z\",\"url\":\"https://github.com/acme/app/pull/42\"}}]';;\n  *) exit 1;;\nesac\n",
+            "#!/bin/sh\necho \"$*\" >> '{log}'\ncase \"$1\" in\n  auth) exit 0;;\n  repo) echo '{{\"defaultBranchRef\":{{\"name\":\"main\"}}}}';;\n  pr) echo '[{{\"number\":42,\"headRefOid\":\"{head}\",\"mergedAt\":\"2026-01-01T00:00:00Z\",\"url\":\"https://github.com/acme/app/pull/42\",\"baseRefName\":\"main\",\"headRepositoryOwner\":{{\"login\":\"acme\"}}}}]';;\n  *) exit 1;;\nesac\n",
             log = log.display()
         ),
     )

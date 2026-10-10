@@ -544,7 +544,7 @@ impl FakeGh {
         fs::write(
             &gh,
             format!(
-                "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$1\" in\n  auth) exit 0;;\n  pr) cat '{}';;\n  *) exit 1;;\nesac\n",
+                "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$1\" in\n  auth) exit 0;;\n  repo) echo '{{\"defaultBranchRef\":{{\"name\":\"main\"}}}}';;\n  pr) cat '{}';;\n  *) exit 1;;\nesac\n",
                 log.display(),
                 response.display()
             ),
@@ -574,7 +574,7 @@ impl FakeGh {
         fs::write(
             &self.response,
             format!(
-                r#"[{{"number":{number},"headRefOid":"{head}","mergedAt":"2026-01-01T00:00:00Z","url":"https://github.com/acme/app/pull/{number}"}}]"#
+                r#"[{{"number":{number},"headRefOid":"{head}","mergedAt":"2026-01-01T00:00:00Z","url":"https://github.com/acme/app/pull/{number}","baseRefName":"main","headRepositoryOwner":{{"login":"acme"}}}}]"#
             ),
         )
         .unwrap();
@@ -661,7 +661,7 @@ fn squash_merged_worktrees_are_removable_when_github_vouches_for_head() {
     let lookups: Vec<&String> = calls.iter().filter(|c| c.starts_with("pr list")).collect();
     assert_eq!(
         lookups,
-        [&"pr list --repo github.com/acme/app --state merged --head unpushed --limit 30 --json number,headRefOid,mergedAt,url".to_string()],
+        [&"pr list --repo github.com/acme/app --state merged --head unpushed --limit 100 --json number,headRefOid,mergedAt,url,baseRefName,headRepositoryOwner".to_string()],
         "{calls:?}"
     );
 }
