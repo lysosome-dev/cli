@@ -1,0 +1,4 @@
+# Steps cargo-dist runs before `dist build` in release.yml (github-build-setup).
+- name: Generate man pages and shell completions
+  shell: bash
+  run: ./scripts/dist-extras.sh

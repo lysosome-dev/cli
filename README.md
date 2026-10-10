@@ -1,5 +1,9 @@
 # lysosome
 
+[![CI](https://github.com/lysosome-dev/cli/actions/workflows/ci.yml/badge.svg)](https://github.com/lysosome-dev/cli/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/lysosome-dev/cli?sort=semver)](https://github.com/lysosome-dev/cli/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **The disk cleaner for the agentic coding era.**
 
 Claude Code, Cursor and parallel agents create git worktrees constantly, and nothing cleans them up. Each dormant worktree drags its own `node_modules`, `target` or `.venv`. Add build artifacts, package caches, local AI models, Docker and Xcode data, and your SSD fills up fast.
@@ -8,15 +12,45 @@ Claude Code, Cursor and parallel agents create git worktrees constantly, and not
 
 > 🚧 Under active development. Milestone 1 (worktree scanner) is here; artifacts, caches, AI models and safe cleanup are next. See [docs/SPEC.md](docs/SPEC.md).
 
+<p align="center"><img src="docs/assets/worktrees.svg" alt="lysosome worktrees: dormant worktrees grouped by how safe they are to remove" width="860"></p>
+
 ## Install
 
-From source (needs a [Rust toolchain](https://rustup.rs) and `git`):
+macOS (Apple silicon and Intel) and Linux (x86_64 and arm64). `git` must be on your `PATH`.
+
+**Homebrew** (installs the man pages and bash/zsh/fish completions too):
 
 ```bash
-cargo install --git https://github.com/lysosome-dev/cli lysosome
+brew install lysosome-dev/tap/lysosome
 ```
 
-Homebrew and prebuilt binaries are coming.
+**Install script** (puts `lysosome` in `$XDG_BIN_HOME` or `~/.local/bin` and adds it to your `PATH`; set `LYSOSOME_INSTALL_DIR` to choose another folder, `LYSOSOME_NO_MODIFY_PATH=1` to leave your shell config alone):
+
+```bash
+curl -fsSL https://lysosome.dev/install.sh | sh
+```
+
+**Prebuilt binaries**: download an archive for your platform from the [latest release](https://github.com/lysosome-dev/cli/releases/latest) and check it against its `.sha256` file. Each archive holds the binary, man pages (`man/`) and shell completions (`completions/`).
+
+**From source** (needs a [Rust toolchain](https://rustup.rs), 1.85+):
+
+```bash
+cargo install --locked --git https://github.com/lysosome-dev/cli lysosome
+```
+
+Check the install with `lysosome --version`.
+
+### Shell completions
+
+Homebrew sets these up for you. Otherwise:
+
+```bash
+lysosome completions zsh > "${fpath[1]}/_lysosome"                              # zsh
+lysosome completions bash > ~/.local/share/bash-completion/completions/lysosome # bash
+lysosome completions fish > ~/.config/fish/completions/lysosome.fish             # fish
+```
+
+`powershell` and `elvish` work too.
 
 ## Quick start
 
@@ -147,6 +181,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 - `crates/lysosome-cli`: the `lysosome` binary (arguments, table/JSON output, progress).
 - `tests/fixtures/make_worktrees.sh`: builds a throwaway tree of worktrees in every state (isolated `HOME` / `GIT_CONFIG_GLOBAL`).
 - `reference/wtscan.py`: the Python prototype the Rust port must agree with.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and how releases are cut, [SECURITY.md](SECURITY.md) to report a vulnerability, and [CHANGELOG.md](CHANGELOG.md) for what changed.
 
 ## License
 

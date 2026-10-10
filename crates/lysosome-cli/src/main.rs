@@ -1,5 +1,6 @@
 //! `lysosome` — the disk cleaner for the agentic coding era.
 
+mod completions;
 mod progress;
 mod ui;
 mod worktrees;
@@ -19,6 +20,16 @@ lysosome finds dormant git worktrees (and soon build artifacts, package
 caches, AI models, Docker and Xcode data) and labels every item by how safe
 it is to delete. Scanning is strictly read-only: it never deletes, moves or
 writes anything.";
+
+/// `--version` adds the commit and target; `-V` stays `lysosome X.Y.Z`.
+const LONG_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("LYSOSOME_GIT_SHA"),
+    " ",
+    env!("LYSOSOME_TARGET"),
+    ")"
+);
 
 const EXAMPLES: &str = "\
 Examples:
@@ -47,6 +58,7 @@ for you to review and run yourself.";
 #[command(
     name = "lysosome",
     version,
+    long_version = LONG_VERSION,
     about = ABOUT,
     long_about = LONG_ABOUT,
     after_help = EXAMPLES,
@@ -76,6 +88,10 @@ enum Command {
     /// Find dormant git worktrees and the disk they're holding
     #[command(after_help = WORKTREE_HELP)]
     Worktrees(WorktreesArgs),
+
+    /// Print a shell completion script (bash, zsh, fish, powershell, elvish)
+    #[command(after_help = completions::COMPLETIONS_HELP)]
+    Completions(completions::CompletionsArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -106,6 +122,11 @@ pub struct WorktreesArgs {
 }
 
 fn main() -> ExitCode {
+    // Release-only man page generator; kept outside clap so it never shows
+    // up in --help or shell completions.
+    if let Some(code) = completions::generate_man_entry(Cli::command) {
+        return code;
+    }
     let cli = Cli::parse();
     let result = match &cli.command {
         None => {
@@ -114,6 +135,7 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Some(Command::Worktrees(args)) => worktrees::run(args, &cli.global),
+        Some(Command::Completions(args)) => completions::completions(Cli::command(), args),
     };
     match result {
         Ok(output) => {
