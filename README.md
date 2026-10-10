@@ -171,7 +171,7 @@ lysosome caches --category ai_models     # just local AI models (repeatable)
 lysosome caches --json                   # same versioned JSON contract
 ```
 
-`lysosome caches` (alias `system`) checks the places dev tools hide gigabytes. It asks each tool where its data lives when it can (`brew --cache`, `go env GOMODCACHE`, `pnpm store path`, `docker system df`, `xcrun simctl`), with short timeouts, and skips anything that isn't installed. Docker is only queried if it's already running; nothing is ever started or changed.
+`lysosome caches` (alias `system`) checks the places dev tools hide gigabytes. It asks each tool where its data lives when it can (`brew --cache`, `pnpm store path`, `docker system df`, `xcrun simctl`), with short timeouts, and skips anything that isn't installed. Docker is only queried if it's already running; nothing is ever started or changed. Tools are asked from `/` with downloads, self-updates and auto-installs switched off, and corepack's (and Volta's) `pnpm` / `yarn` shims are never run (they can download the real tool first); the default store locations are checked instead.
 
 | Category | What | Tier |
 |---|---|---|

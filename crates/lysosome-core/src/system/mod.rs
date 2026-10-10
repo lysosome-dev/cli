@@ -6,7 +6,7 @@
 //! detector:
 //! * checks that its location exists before doing anything else;
 //! * asks the owning tool where its data lives when it can (`brew --cache`,
-//!   `go env GOMODCACHE`, `docker system df`...) through the timeout-guarded
+//!   `pnpm store path`, `docker system df`...) through the timeout-guarded
 //!   [`tools::Tools`] runner, falling back to well-known paths;
 //! * never fails the scan because a tool is missing, slow or broken;
 //! * is read-only: it lists, `lstat`s and sizes, and never writes.
@@ -47,7 +47,8 @@ pub use tools::Tools;
 /// one instead of inheriting the process environment.
 #[derive(Debug, Clone)]
 pub struct SystemEnv {
-    vars: HashMap<String, OsString>,
+    /// Shared with every [`Tools`] runner as its children's base environment.
+    vars: Arc<HashMap<String, OsString>>,
     /// Timeout for ordinary "where is your cache?" tool calls.
     pub tool_timeout: Duration,
     /// Timeout for quick liveness probes (is the Docker daemon up?).
@@ -66,7 +67,7 @@ impl SystemEnv {
             .and_then(|v| v.to_str()?.parse::<u64>().ok())
             .map(Duration::from_millis);
         SystemEnv {
-            vars,
+            vars: Arc::new(vars),
             tool_timeout: overridden.unwrap_or(tools::DEFAULT_TOOL_TIMEOUT),
             probe_timeout: overridden.unwrap_or(tools::DEFAULT_PROBE_TIMEOUT),
         }
@@ -78,11 +79,12 @@ impl SystemEnv {
         K: Into<String>,
         V: Into<OsString>,
     {
+        let vars: HashMap<String, OsString> = vars
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect();
         SystemEnv {
-            vars: vars
-                .into_iter()
-                .map(|(k, v)| (k.into(), v.into()))
-                .collect(),
+            vars: Arc::new(vars),
             tool_timeout: tools::DEFAULT_TOOL_TIMEOUT,
             probe_timeout: tools::DEFAULT_PROBE_TIMEOUT,
         }
@@ -98,13 +100,15 @@ impl SystemEnv {
         self.var(key).map(PathBuf::from).filter(|p| p.is_absolute())
     }
 
-    /// Tool runner using this environment's `PATH` and the scan's home.
+    /// Tool runner using this environment (and nothing else from the process),
+    /// its `PATH` and the scan's home. See [`tools`] for the safety overrides.
     pub fn tools(&self, home: &Path) -> Tools {
         Tools::new(
             self.var("PATH").cloned(),
             Some(home.to_path_buf()),
             self.tool_timeout,
         )
+        .with_env(Arc::clone(&self.vars))
     }
 
     /// `$XDG_CACHE_HOME`, else `~/.cache`.

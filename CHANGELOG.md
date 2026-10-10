@@ -7,6 +7,36 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-10
+
+### Fixed
+
+- Scanning could write to disk (#13): with corepack's `pnpm` shim on `PATH`,
+  asking `pnpm store path` downloaded pnpm into `~/.cache/node/corepack`.
+  `pnpm` is now asked only when it is a real pnpm install; behind corepack,
+  Volta or a version-manager shim (asdf, mise...) the store is found from
+  `store-dir` (`npm_config_store_dir`, `~/.npmrc`, pnpm's `rc`) or the default
+  locations (`$PNPM_HOME/store`, `$XDG_DATA_HOME/pnpm/store`,
+  `~/Library/pnpm/store`, `~/.local/share/pnpm/store`). Yarn is no longer
+  asked at all, since `yarn cache dir` creates a missing cache folder: its
+  cache comes from `$YARN_CACHE_FOLDER`, `cache-folder` in `~/.yarnrc`, or the
+  defaults (`~/Library/Caches/Yarn`, `~/.cache/yarn`, Yarn 2+'s
+  `$XDG_DATA_HOME/yarn/berry/cache` or `~/.yarn/berry/cache`).
+- Go is no longer asked either: since Go 1.23 every go command updates
+  telemetry counters on disk. `GOMODCACHE` / `GOCACHE` / `GOPATH` come from
+  the environment, then Go's `go env -w` file, then the defaults.
+- Every tool a scan still asks (`pnpm`, `pip`, `uv`, `brew`, `docker`,
+  `xcrun`) now runs from `/` with only the scan's environment plus switches
+  that turn off downloads, self-updates, auto-installs and bytecode writes
+  (`COREPACK_ENABLE_NETWORK=0`, `GOTOOLCHAIN=local`,
+  `HOMEBREW_NO_AUTO_UPDATE=1`, `PIP_DISABLE_PIP_VERSION_CHECK=1`,
+  `PYTHONDONTWRITEBYTECODE=1`, `MISE_EXEC_AUTO_INSTALL=false`...), so a
+  project's `packageManager` field or `go.mod` toolchain line can't make a
+  tool fetch itself.
+- `lysosome clean` runs cache cleanup commands with corepack's auto-pin and
+  strict mode off, so it never edits the `package.json` of the folder you run
+  it from.
+
 ## [0.2.0] - 2026-10-10
 
 ### Added
@@ -66,6 +96,7 @@ First release.
   and a Homebrew tap (`brew install lysosome-dev/tap/lysosome`). Archives
   include man pages and shell completions.
 
-[Unreleased]: https://github.com/lysosome-dev/cli/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/lysosome-dev/cli/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/lysosome-dev/cli/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/lysosome-dev/cli/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lysosome-dev/cli/releases/tag/v0.1.0

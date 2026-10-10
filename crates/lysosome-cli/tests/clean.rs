@@ -594,6 +594,169 @@ fn command_cleanups_run_the_tool_and_failures_are_reported_per_item() {
         .any(|e| e["outcome"] == "failed" && e["command"][0] == "brew"));
 }
 
+/// Write an executable script.
+fn script(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, body).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Regression test for #13: through corepack, `pnpm store path` downloads
+/// pnpm into `~/.cache/node/corepack` on first use. A scan or dry run with
+/// corepack's shims on PATH must not run them, and must still find the store
+/// at its default location.
+#[test]
+fn corepack_shims_are_never_run_by_a_scan_or_dry_run() {
+    let fx = Fixture::new("make_caches.sh");
+    let home = fx.p("home");
+    let marker = fx.p("corepack-ran");
+    // What `corepack enable` leaves on PATH: symlinks into corepack's dist/.
+    // Each "shim" simulates corepack's first-run download.
+    let dist = fx.p("node/lib/node_modules/corepack/dist");
+    for tool in ["pnpm", "yarn"] {
+        script(
+            &dist.join(format!("{tool}.js")),
+            &format!(
+                "#!/bin/sh\n/bin/mkdir -p \"$HOME/.cache/node/corepack/v1/{tool}/9.0.0\"\n/usr/bin/touch '{}'\necho \"$HOME\"\n",
+                marker.display()
+            ),
+        );
+        let link = fx.p("bin").join(tool);
+        let _ = fs::remove_file(&link);
+        std::os::unix::fs::symlink(
+            format!("../node/lib/node_modules/corepack/dist/{tool}.js"),
+            &link,
+        )
+        .unwrap();
+    }
+    let store = if cfg!(target_os = "macos") {
+        home.join("Library/pnpm/store")
+    } else {
+        home.join(".local/share/pnpm/store")
+    };
+    fs::create_dir_all(store.join("v10/files/00")).unwrap();
+    fs::write(store.join("v10/files/00/blob"), vec![b'x'; 64 * 1024]).unwrap();
+    let yarn = if cfg!(target_os = "macos") {
+        home.join("Library/Caches/Yarn")
+    } else {
+        home.join(".cache/yarn")
+    };
+    fs::create_dir_all(yarn.join("v6/npm-left-pad")).unwrap();
+    fs::write(yarn.join("v6/npm-left-pad/index.js"), vec![b'x'; 64 * 1024]).unwrap();
+
+    let before = snapshot(&fx.dest);
+    let out = caches_cmd(&fx).args(["caches", "--json"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let path_of = |kind: &str| {
+        doc["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["kind"] == kind)
+            .and_then(|f| f["path"].as_str())
+            .map(PathBuf::from)
+    };
+    assert_eq!(
+        path_of("pnpm-store"),
+        Some(store.clone()),
+        "default store found"
+    );
+    assert_eq!(
+        path_of("yarn-cache"),
+        Some(yarn.clone()),
+        "default cache found"
+    );
+    for args in [
+        &["clean", "--caches"][..],
+        &[
+            "clean",
+            "--caches",
+            "--tier",
+            "regenerable_expensive",
+            "--json",
+        ][..],
+    ] {
+        let out = caches_cmd(&fx).args(args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let text = String::from_utf8_lossy(
+        &caches_cmd(&fx)
+            .args(["clean", "--caches"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .into_owned();
+    assert!(text.contains("pnpm store prune"), "{text}");
+
+    assert!(!marker.exists(), "a corepack shim was run during a scan");
+    assert!(
+        !home.join(".cache/node").exists(),
+        "corepack downloaded during a scan"
+    );
+    let changed = diff(&before, &snapshot(&fx.dest));
+    assert!(
+        changed.is_empty(),
+        "scan / dry run modified:\n{}",
+        changed.join("\n")
+    );
+}
+
+/// A real pnpm install (here npm-global style: bin/pnpm ->
+/// lib/node_modules/pnpm/bin/pnpm.cjs) is still asked, but only with
+/// downloads and self-management turned off and from `/`, never the user's
+/// project folder.
+#[test]
+fn real_pnpm_is_asked_with_downloads_disabled() {
+    let fx = Fixture::new("make_caches.sh");
+    let marker = fx.p("unsafe-env");
+    let custom = fx.p("home/custom-pnpm-store");
+    fs::create_dir_all(custom.join("v10")).unwrap();
+    fs::write(custom.join("v10/blob"), vec![b'x'; 64 * 1024]).unwrap();
+    let real = fx.p("node/lib/node_modules/pnpm/bin/pnpm.cjs");
+    script(
+        &real,
+        &format!(
+            "#!/bin/sh\n\
+             [ \"$COREPACK_ENABLE_NETWORK\" = 0 ] && [ \"$COREPACK_ENABLE_DOWNLOAD_PROMPT\" = 0 ] \\\n\
+               && [ \"$npm_config_manage_package_manager_versions\" = false ] && [ \"$(pwd)\" = / ] \\\n\
+               || /usr/bin/touch '{}'\n\
+             echo '{}'\n",
+            marker.display(),
+            custom.display()
+        ),
+    );
+    let _ = fs::remove_file(fx.p("bin/pnpm"));
+    std::os::unix::fs::symlink(&real, fx.p("bin/pnpm")).unwrap();
+    let before = snapshot(&fx.dest);
+    let out = caches_cmd(&fx)
+        .env("COREPACK_ENABLE_NETWORK", "1")
+        .args(["caches", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let pnpm = doc["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["kind"] == "pnpm-store")
+        .expect("pnpm store found");
+    assert_eq!(pnpm["path"], custom.to_str().unwrap());
+    assert!(!marker.exists(), "pnpm ran with an unsafe environment");
+    assert!(diff(&before, &snapshot(&fx.dest)).is_empty());
+}
+
 impl Fixture {
     fn log_lines_at(&self, home: &Path) -> Vec<Value> {
         let p = if cfg!(target_os = "macos") {

@@ -590,6 +590,7 @@ impl<'a> Executor<'a> {
             args: &remove_args,
             env: &env,
             env_remove: REPO_ENV_VARS,
+            cwd: None,
             timeout: self.git_timeout,
         });
         let out = match out {
@@ -626,6 +627,7 @@ impl<'a> Executor<'a> {
             args: &hardened(&["worktree", "prune"]),
             env: &env,
             env_remove: REPO_ENV_VARS,
+            cwd: None,
             timeout: self.git_timeout,
         })
         .is_ok_and(|o| o.success);
@@ -658,11 +660,18 @@ impl<'a> Executor<'a> {
         planned: u64,
     ) -> ItemResult {
         let dest = Some("command".to_string());
+        // Corepack may fetch the tool (cleaning is an explicit request) but
+        // must never pin or edit the package.json in the current folder.
+        let env: Vec<(OsString, OsString)> = crate::system::tools::COREPACK_NO_EDIT
+            .iter()
+            .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+            .collect();
         let out = match process::run(&Proc {
             program,
             args: &argv[1..],
-            env: &[],
+            env: &env,
             env_remove: &[],
+            cwd: None,
             timeout: self.command_timeout,
         }) {
             Ok(o) => o,
