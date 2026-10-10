@@ -14,14 +14,15 @@
 #   home/.cache/whisper        large-v3.pt
 #   home/.npm/_cacache         npm cache
 #   home/fake-brew-cache       reported by the fake `brew --cache`
-#   home/fake-go/{mod,build}   reported by the fake `go env GOMODCACHE GOCACHE`
+#   home/fake-go/{mod,build}   set as GOMODCACHE / GOCACHE in Go's `go env -w` file
 #   home/.cargo/registry       Cargo registry
 #   home/.android/avd          Pixel_8.avd + Pixel_8.ini
 #   home/Library/Developer/Xcode  DerivedData, iOS DeviceSupport/17.5 (21F79), Archives
 #   home/Library/Developer/CoreSimulator/Devices/DEAD-BEEF  an unavailable simulator
 #   bin/docker                 daemon "running"; canned `docker system df -v --format json`
 #   bin/xcrun                  canned `simctl list --json devices` / `simctl runtime list --json`
-#   bin/brew, bin/go           print the fake cache paths above
+#   bin/brew                   prints the fake cache path above
+#   bin/go                     touches <dest>/go-ran (a scan must never run go)
 #   bin/pip                    exits 1 (a broken tool must not break the scan)
 #   bin/pnpm                   prints a path that doesn't exist (ignored)
 #   bin/uv                     hangs if <dest>/hang-uv exists (proves tool timeouts work), else exits 1
@@ -124,11 +125,14 @@ cat > "$B/brew" <<EOF
 [ "\$1" = "--cache" ] && echo "$H/fake-brew-cache" && exit 0
 exit 1
 EOF
+for d in "$H/Library/Application Support/go" "$H/.config/go"; do
+  mkdir -p "$d"
+  printf 'GOMODCACHE=$HOME/fake-go/mod\nGOCACHE=%s/fake-go/build\n' "$H" > "$d/env"
+done
 cat > "$B/go" <<EOF
 #!/bin/sh
-[ "\$*" = "env GOMODCACHE GOCACHE" ] || exit 1
-echo "$H/fake-go/mod"
-echo "$H/fake-go/build"
+/usr/bin/touch "$DEST/go-ran"
+exit 1
 EOF
 cat > "$B/pip" <<'EOF'
 #!/bin/sh

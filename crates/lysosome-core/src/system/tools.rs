@@ -1,4 +1,4 @@
-//! Running other developer tools (`brew --cache`, `go env`, `docker system df`,
+//! Running other developer tools (`brew --cache`, `pnpm store path`, `docker system df`,
 //! `xcrun simctl`...) to ask them where their data lives.
 //!
 //! * Programs are looked up on the `PATH` of the [`SystemEnv`](super::SystemEnv),
@@ -33,6 +33,14 @@ pub const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(10);
 /// Default timeout for liveness probes (`docker version`): a daemon that is
 /// up answers in milliseconds.
 pub const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Corepack switches that keep it from pinning a version into (or refusing to
+/// run over) the current folder's package.json. Also set by `clean`.
+pub const COREPACK_NO_EDIT: &[(&str, &str)] = &[
+    ("COREPACK_ENABLE_AUTO_PIN", "0"),
+    ("COREPACK_ENABLE_STRICT", "0"),
+    ("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0"),
+];
 
 /// Variables set on every scan-time tool call, overriding the environment, so
 /// asking a tool where its cache lives can never make it download, update,

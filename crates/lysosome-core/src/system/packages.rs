@@ -65,59 +65,62 @@ fn npm(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
         .map(|p| item("npm-cache", p, "npm cache").command(["npm", "cache", "clean", "--force"])))
 }
 
-/// `key` from a simple rc file: `key=value` (`.npmrc`, pnpm's `rc`) or
-/// `key value` / `key "value"` (`.yarnrc`). `~/` is expanded; anything that
-/// isn't then an absolute path is ignored.
+/// `key` from a simple rc file: `key=value` (`.npmrc`, pnpm's `rc`, Go's env
+/// file) or `key value` / `key "value"` (`.yarnrc`). The last setting wins, as
+/// in the tools themselves. `~/`, `$HOME/` and `${HOME}/` are expanded;
+/// anything that isn't then an absolute path is ignored.
 fn rc_path(file: &Path, key: &str, home: &Path) -> Option<PathBuf> {
     let text = std::fs::read_to_string(file).ok()?;
-    text.lines().find_map(|l| {
+    let value = text.lines().rev().find_map(|l| {
         let rest = l.trim().strip_prefix(key)?;
         if !rest.starts_with(['=', ' ', '\t']) {
             return None; // `keyfoo=...`, a different key
         }
         let v = rest.trim_start();
-        let v = v.strip_prefix('=').unwrap_or(v).trim();
-        let v = v.trim_matches('"');
-        let p = match v.strip_prefix("~/") {
-            Some(r) => home.join(r),
-            None => PathBuf::from(v),
-        };
-        p.is_absolute().then_some(p)
-    })
+        Some(v.strip_prefix('=').unwrap_or(v).trim().trim_matches('"'))
+    })?;
+    let p = ["~/", "$HOME/", "${HOME}/"]
+        .iter()
+        .find_map(|pre| value.strip_prefix(pre))
+        .map_or_else(|| PathBuf::from(value), |r| home.join(r));
+    p.is_absolute().then_some(p)
 }
 
-/// The newest `v<N>` layout folder inside a store/cache root (what the tool
-/// itself reports and what its cleanup command clears), else the root.
-fn versioned(root: PathBuf) -> PathBuf {
-    super::subdirs(&root)
-        .into_iter()
-        .filter_map(|d| {
-            let n = d
-                .file_name()?
-                .to_str()?
-                .strip_prefix('v')?
-                .parse::<u32>()
-                .ok()?;
-            Some((n, d))
-        })
-        .max_by_key(|(n, _)| *n)
-        .map_or(root, |(_, d)| d)
-}
-
-/// Whether the `pnpm` on PATH is a real pnpm install (npm global, Homebrew,
-/// the standalone installer, `@pnpm/exe`): some folder above it is named
-/// `pnpm…` / `@pnpm`. Corepack, Volta and version-manager shims (asdf, mise,
-/// nodenv) are not, and may run corepack behind the shim.
+/// Whether the `pnpm` on PATH is a real pnpm install: it resolves to a file
+/// named `pnpm…` that is either inside the `pnpm` / `@pnpm/*` npm package
+/// (npm global, Homebrew's `Cellar/pnpm`) or a native executable (the
+/// standalone installer, `@pnpm/exe`). Corepack, Volta, asdf, mise and nodenv
+/// shims are none of these, and may run corepack behind the shim.
 fn real_pnpm(tools: &Tools) -> bool {
     let Some(exe) = tools.which("pnpm") else {
         return false;
     };
     let resolved = std::fs::canonicalize(&exe).unwrap_or(exe);
-    resolved.parent().is_some_and(|dir| {
-        dir.ancestors()
-            .filter_map(|a| a.file_name()?.to_str())
-            .any(|n| n.starts_with("pnpm") || n == "@pnpm")
-    })
+    if !resolved
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("pnpm"))
+    {
+        return false;
+    }
+    let names: Vec<&str> = resolved
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    let in_package = names.windows(2).any(|w| {
+        (w[0] == "node_modules" && (w[1] == "pnpm" || w[1] == "@pnpm"))
+            || (w[0] == "Cellar" && w[1] == "pnpm")
+    });
+    in_package || !is_script(&resolved)
+}
+
+/// Whether `p` starts with `#!`.
+fn is_script(p: &Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 2];
+    std::fs::File::open(p)
+        .and_then(|mut f| f.read_exact(&mut head))
+        .is_ok_and(|()| &head == b"#!")
 }
 
 /// pnpm's store. Asks `pnpm store path` only when `pnpm` is a real install;
@@ -159,7 +162,7 @@ fn pnpm(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
         }
         c.push(h.join(".local/share/pnpm/store"));
         c.push(h.join(".pnpm-store"));
-        first_dir(c).map(versioned)
+        first_dir(c)
     });
     one(found.map(|p| {
         item("pnpm-store", p, "pnpm store")
@@ -190,7 +193,7 @@ fn yarn(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
         if p.ends_with("berry/cache") {
             item("yarn-cache", p, "Yarn cache").command(["yarn", "cache", "clean", "--mirror"])
         } else {
-            item("yarn-cache", versioned(p), "Yarn cache").command(["yarn", "cache", "clean"])
+            item("yarn-cache", p, "Yarn cache").command(["yarn", "cache", "clean"])
         }
     }))
 }
@@ -271,18 +274,38 @@ fn cargo(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
     finish(items)
 }
 
+/// Go's module and build caches, resolved the way the go command does:
+/// environment, then the `go env -w` file, then the defaults. `go env` itself
+/// is never run: since Go 1.23 every go command updates local telemetry
+/// counters on disk, which a scan must not do.
 fn go(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
     let h = &ctx.home;
-    let tools = env.tools(h);
-    let (mut modcache, mut buildcache) = (None, None);
-    if let Some(out) = tools.output("go", ["env", "GOMODCACHE", "GOCACHE"]) {
-        let mut lines = out.lines().map(|l| PathBuf::from(l.trim()));
-        modcache = lines.next().and_then(super::real_dir);
-        buildcache = lines.next().and_then(super::real_dir);
-    }
-    let gopath = env.var_path("GOPATH").unwrap_or_else(|| h.join("go"));
-    let modcache = modcache.or_else(|| first_dir([gopath.join("pkg/mod")]));
-    let buildcache = buildcache.or_else(|| first_dir([os_cache(env, h, "go-build", "go-build")]));
+    let env_file = env.var_path("GOENV").unwrap_or_else(|| {
+        if cfg!(target_os = "macos") {
+            h.join("Library/Application Support/go/env")
+        } else {
+            env.var_path("XDG_CONFIG_HOME")
+                .unwrap_or_else(|| h.join(".config"))
+                .join("go/env")
+        }
+    });
+    let setting = |key: &str| env.var_path(key).or_else(|| rc_path(&env_file, key, h));
+    let gopath = env
+        .var("GOPATH")
+        .and_then(|v| std::env::split_paths(v).next())
+        .filter(|p| p.is_absolute())
+        .or_else(|| rc_path(&env_file, "GOPATH", h))
+        .unwrap_or_else(|| h.join("go"));
+    let modcache = first_dir(
+        setting("GOMODCACHE")
+            .into_iter()
+            .chain([gopath.join("pkg/mod")]),
+    );
+    let buildcache = first_dir(
+        setting("GOCACHE")
+            .into_iter()
+            .chain([os_cache(env, h, "go-build", "go-build")]),
+    );
     let mut items = Vec::new();
     if let Some(p) = modcache {
         items.push(item("go-modcache", p, "Go module cache").command(["go", "clean", "-modcache"]));
@@ -399,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn rc_files_and_versioned_layouts() {
+    fn rc_files_last_setting_wins_and_home_expands() {
         let t = tempfile::tempdir().unwrap();
         let h = t.path();
         std::fs::write(
@@ -419,12 +442,16 @@ mod tests {
         std::fs::write(h.join("rel"), "store-dir=relative/path\n").unwrap();
         assert_eq!(rc_path(&h.join("rel"), "store-dir", h), None);
         assert_eq!(rc_path(&h.join("missing"), "store-dir", h), None);
-
-        for d in ["root/v3", "root/v10", "root/v9", "root/vx", "flat/files"] {
-            std::fs::create_dir_all(h.join(d)).unwrap();
-        }
-        assert_eq!(versioned(h.join("root")), h.join("root/v10"));
-        assert_eq!(versioned(h.join("flat")), h.join("flat"));
+        std::fs::write(
+            h.join("twice"),
+            "store-dir=/old\nstore-dir=${HOME}/new\nGOPATH=$HOME/gp\n",
+        )
+        .unwrap();
+        assert_eq!(
+            rc_path(&h.join("twice"), "store-dir", h),
+            Some(h.join("new"))
+        );
+        assert_eq!(rc_path(&h.join("twice"), "GOPATH", h), Some(h.join("gp")));
     }
 
     #[test]
@@ -435,11 +462,11 @@ mod tests {
         let reported = t.path().join("reported-store");
         write(&reported.join("x"), 10_000);
         let default = h.join(if cfg!(target_os = "macos") {
-            "Library/pnpm/store/v10"
+            "Library/pnpm/store"
         } else {
-            ".local/share/pnpm/store/v10"
+            ".local/share/pnpm/store"
         });
-        write(&default.join("files/x"), 10_000);
+        write(&default.join("v10/files/x"), 10_000);
         let body = format!(
             "#!/bin/sh\n/usr/bin/touch '{}'\necho '{}'\n",
             marker.display(),
@@ -451,11 +478,23 @@ mod tests {
             pnpm(&env, &ctx(&h))
         };
 
-        // An asdf/mise-style shim (may run corepack behind it): never asked.
-        exe(&bin.join("pnpm"), &format!("{body}# asdf exec pnpm\n"));
+        // An asdf/nodenv-style shim script (may run corepack behind it), even
+        // under a `pnpm…` folder: never asked.
+        exe(
+            &t.path().join("pnpm-dev/shims/pnpm"),
+            &format!("{body}# asdf exec pnpm\n"),
+        );
+        std::fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(t.path().join("pnpm-dev/shims/pnpm"), bin.join("pnpm")).unwrap();
         let f = run();
         assert!(!marker.exists(), "a version-manager shim was run");
         assert_eq!(f[0].path, default);
+        // A mise-style shim: a link to another program.
+        std::fs::remove_file(bin.join("pnpm")).unwrap();
+        exe(&t.path().join("mise/bin/mise"), &body);
+        std::os::unix::fs::symlink(t.path().join("mise/bin/mise"), bin.join("pnpm")).unwrap();
+        run();
+        assert!(!marker.exists(), "a mise shim was run");
 
         // npm-global layout: bin/pnpm -> ../lib/node_modules/pnpm/bin/pnpm.cjs
         std::fs::remove_file(bin.join("pnpm")).unwrap();
@@ -474,7 +513,7 @@ mod tests {
         write(&h.join("custom/v6/npm-a/x"), 10_000);
         std::fs::write(h.join(".yarnrc"), "cache-folder ~/custom\n").unwrap();
         let f = yarn(&bare_env(), &ctx(h));
-        assert_eq!(f[0].path, h.join("custom/v6"));
+        assert_eq!(f[0].path, h.join("custom"));
         assert_eq!(
             f[0].cleanup.as_ref().unwrap().command,
             ["yarn", "cache", "clean"]
@@ -490,5 +529,27 @@ mod tests {
             f[0].cleanup.as_ref().unwrap().command,
             ["yarn", "cache", "clean", "--mirror"]
         );
+    }
+
+    #[test]
+    fn go_reads_env_then_go_env_file_then_defaults() {
+        let t = tempfile::tempdir().unwrap();
+        let h = t.path();
+        write(&h.join("go/pkg/mod/cache/x"), 10_000);
+        let f = go(&bare_env(), &ctx(h));
+        assert_eq!(by_kind(&f, "go-modcache")[0].path, h.join("go/pkg/mod"));
+
+        let file = h.join("goenv");
+        write(&h.join("custom-mod/x"), 10_000);
+        write(&h.join("custom-build/x"), 10_000);
+        std::fs::write(
+            &file,
+            "GOMODCACHE=$HOME/custom-mod\nGOCACHE=${HOME}/custom-build\n",
+        )
+        .unwrap();
+        let env = SystemEnv::isolated([("GOENV", file)]);
+        let f = go(&env, &ctx(h));
+        assert_eq!(by_kind(&f, "go-modcache")[0].path, h.join("custom-mod"));
+        assert_eq!(by_kind(&f, "go-buildcache")[0].path, h.join("custom-build"));
     }
 }

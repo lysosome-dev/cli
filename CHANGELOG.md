@@ -21,10 +21,11 @@ All notable changes to this project are documented here. The format follows
   asked at all, since `yarn cache dir` creates a missing cache folder: its
   cache comes from `$YARN_CACHE_FOLDER`, `cache-folder` in `~/.yarnrc`, or the
   defaults (`~/Library/Caches/Yarn`, `~/.cache/yarn`, Yarn 2+'s
-  `$XDG_DATA_HOME/yarn/berry/cache` or `~/.yarn/berry/cache`). Both report the
-  current versioned folder (`store/v10`, `Yarn/v6`), the part their cleanup
-  command clears.
-- Every tool a scan asks (`pnpm`, `pip`, `uv`, `go`, `brew`, `docker`,
+  `$XDG_DATA_HOME/yarn/berry/cache` or `~/.yarn/berry/cache`).
+- Go is no longer asked either: since Go 1.23 every go command updates
+  telemetry counters on disk. `GOMODCACHE` / `GOCACHE` / `GOPATH` come from
+  the environment, then Go's `go env -w` file, then the defaults.
+- Every tool a scan still asks (`pnpm`, `pip`, `uv`, `brew`, `docker`,
   `xcrun`) now runs from `/` with only the scan's environment plus switches
   that turn off downloads, self-updates, auto-installs and bytecode writes
   (`COREPACK_ENABLE_NETWORK=0`, `GOTOOLCHAIN=local`,
@@ -32,9 +33,9 @@ All notable changes to this project are documented here. The format follows
   `PYTHONDONTWRITEBYTECODE=1`, `MISE_EXEC_AUTO_INSTALL=false`...), so a
   project's `packageManager` field or `go.mod` toolchain line can't make a
   tool fetch itself.
-- `lysosome clean` runs cache cleanup commands from `/` with corepack's
-  auto-pin and strict mode off, so the folder you run it from can't pick a
-  different pnpm/Yarn version or have its `package.json` edited.
+- `lysosome clean` runs cache cleanup commands with corepack's auto-pin and
+  strict mode off, so it never edits the `package.json` of the folder you run
+  it from.
 
 ## [0.2.0] - 2026-10-10
 

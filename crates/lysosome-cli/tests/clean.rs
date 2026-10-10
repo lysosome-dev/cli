@@ -664,12 +664,12 @@ fn corepack_shims_are_never_run_by_a_scan_or_dry_run() {
     };
     assert_eq!(
         path_of("pnpm-store"),
-        Some(store.join("v10")),
+        Some(store.clone()),
         "default store found"
     );
     assert_eq!(
         path_of("yarn-cache"),
-        Some(yarn.join("v6")),
+        Some(yarn.clone()),
         "default cache found"
     );
     for args in [

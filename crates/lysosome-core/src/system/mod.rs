@@ -6,7 +6,7 @@
 //! detector:
 //! * checks that its location exists before doing anything else;
 //! * asks the owning tool where its data lives when it can (`brew --cache`,
-//!   `go env GOMODCACHE`, `docker system df`...) through the timeout-guarded
+//!   `pnpm store path`, `docker system df`...) through the timeout-guarded
 //!   [`tools::Tools`] runner, falling back to well-known paths;
 //! * never fails the scan because a tool is missing, slow or broken;
 //! * is read-only: it lists, `lstat`s and sizes, and never writes.
