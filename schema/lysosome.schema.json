@@ -55,14 +55,10 @@
       ]
     },
     "cleanup": {
-      "description": "How to remove the item. action=command: run the tool's own cleanup argv. action=trash: move paths to the Trash. Never present for items that are not safe to remove.",
+      "description": "How to remove the item. action \"command\" (the default when absent): run `command`, an argv vector — the tool's own cleanup command. action \"trash\": move every entry of `paths` to the Trash. Never present for items that are not safe to remove.",
       "type": "object",
-      "anyOf": [{ "required": ["command"] }, { "required": ["paths"] }],
       "properties": {
-        "action": {
-          "description": "Missing in reports from before it was added; treat as \"command\".",
-          "enum": ["command", "trash"]
-        },
+        "action": { "enum": ["command", "trash"] },
         "command": {
           "type": "array",
           "minItems": 1,
@@ -74,16 +70,9 @@
           "items": { "$ref": "#/$defs/path" }
         }
       },
-      "allOf": [
-        {
-          "if": { "properties": { "action": { "const": "command" } } },
-          "then": { "required": ["command"] }
-        },
-        {
-          "if": { "properties": { "action": { "const": "trash" } } },
-          "then": { "required": ["paths"] }
-        }
-      ]
+      "if": { "required": ["action"], "properties": { "action": { "const": "trash" } } },
+      "then": { "required": ["paths"] },
+      "else": { "required": ["command"] }
     },
     "summary": {
       "type": "object",

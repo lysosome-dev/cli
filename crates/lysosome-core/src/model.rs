@@ -88,41 +88,37 @@ impl Status {
     }
 }
 
-/// How Milestone 4 `clean` removes a finding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// How a finding gets removed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CleanupAction {
     /// Run the tool's own cleanup command ([`Cleanup::command`]).
+    #[default]
     Command,
-    /// Move [`Cleanup::paths`] to the Trash.
+    /// Move [`Cleanup::paths`] to the Trash (Milestone 4 uses the `trash` crate).
     Trash,
 }
 
-impl CleanupAction {
-    fn default_command() -> Self {
-        CleanupAction::Command
-    }
-}
-
-/// How a user (or Milestone 4 `clean`) would remove a finding. Build it with
-/// [`Cleanup::command`] or [`Cleanup::trash`].
+/// How a user (or Milestone 4 `clean`) would remove a finding.
 ///
-/// JSON: `{"action":"command","command":[...]}` or `{"action":"trash","paths":[...]}`.
+/// * `action: "command"` — run `command`, an argv vector (no shell quoting needed).
+/// * `action: "trash"` — move every entry of `paths` to the Trash.
+///
+/// Build with [`Cleanup::command`] / [`Cleanup::trash`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cleanup {
-    /// Defaults to `command` when reading reports written before `action` existed.
-    #[serde(default = "CleanupAction::default_command")]
+    #[serde(default)]
     pub action: CleanupAction,
-    /// argv of the cleanup command (no shell quoting needed). Empty for `trash`.
+    /// argv for [`CleanupAction::Command`]; empty (and omitted from JSON) otherwise.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub command: Vec<String>,
-    /// Paths to move to the Trash. Empty for `command`.
+    /// Paths for [`CleanupAction::Trash`]; empty (and omitted from JSON) otherwise.
     #[serde(default, skip_serializing_if = "Vec::is_empty", with = "lossy_paths")]
     pub paths: Vec<PathBuf>,
 }
 
 impl Cleanup {
-    /// Run this argv.
+    /// Run the tool's own cleanup command (`argv[0]` is the program).
     pub fn command(argv: Vec<String>) -> Self {
         Cleanup {
             action: CleanupAction::Command,
@@ -131,7 +127,7 @@ impl Cleanup {
         }
     }
 
-    /// Move these paths to the Trash.
+    /// Move `paths` to the Trash.
     pub fn trash(paths: Vec<PathBuf>) -> Self {
         Cleanup {
             action: CleanupAction::Trash,
