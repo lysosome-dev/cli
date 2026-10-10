@@ -444,7 +444,9 @@ fn table_output_is_sectioned_and_plain_when_piped() {
         "no ANSI codes when piped:\n{text}"
     );
     for needle in [
-        "3 projects untouched for 30+ days are holding 11.5 MB of dependencies and build output.",
+        // Exact size depends on the filesystem's directory allocation.
+        "3 projects untouched for 30+ days are holding 11.",
+        " MB of dependencies and build output.",
         "reclaimable now",
         "regenerable_expensive",
         "── Git worktrees",
