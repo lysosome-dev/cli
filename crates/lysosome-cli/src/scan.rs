@@ -24,9 +24,10 @@ use crate::ui::{
     self, human_bytes, pad_left, pad_right, plural, thousands, Painter, PathShortener,
 };
 use crate::worktrees::{self, View};
-use crate::{GlobalArgs, ScanArgs};
+use crate::{GlobalArgs, ScanArgs, ScanCmdArgs};
 
-pub fn run(args: &ScanArgs, global: &GlobalArgs) -> Result<String> {
+pub fn run(cmd: &ScanCmdArgs, global: &GlobalArgs) -> Result<String> {
+    let args = &cmd.common;
     let home = dirs::home_dir();
     let shortener = PathShortener::new(home.clone());
     let roots = worktrees::resolve_roots(&args.roots, home.as_deref())?;
@@ -49,13 +50,26 @@ pub fn run(args: &ScanArgs, global: &GlobalArgs) -> Result<String> {
     } else {
         ctx.progress = &NoProgress;
     }
-    let detectors = detectors::all_detectors();
+    // System detectors read fixed locations under the home folder; without a
+    // home they would look relative to the current directory.
+    let system = !cmd.no_system && home.is_some();
+    if !cmd.no_system && home.is_none() {
+        eprintln!(
+            "{} home folder unknown; skipping caches, AI models, Docker and Xcode",
+            warn.paint("warning:", Style::new().yellow().bold())
+        );
+    }
+    let detectors = if system {
+        detectors::all_detectors()
+    } else {
+        detectors::project_detectors()
+    };
     let mut run = detectors::run(&detectors, &ctx);
     if let Some(s) = &spinner {
         s.clear();
     }
 
-    if run.all_failed() {
+    if run.all_failed() || run.project_detectors_failed() {
         let err = run.runs.iter_mut().find_map(|r| r.error.take());
         return Err(err
             .map(anyhow::Error::from)
@@ -455,12 +469,23 @@ fn generic_section(
         .sum();
 
     let all_rows = kept.iter().flat_map(|b| b.rows.iter());
+    // System findings carry a human name (`llama3.1:8b`, `web:1.0`, `iOS 17.5`);
+    // show it instead of the kind when the section has one.
+    let named = kept
+        .iter()
+        .flat_map(|b| b.rows.iter())
+        .any(|r| r.f.details["name"].is_string());
+    let label_title = if named { "NAME" } else { "KIND" };
     let cells: Vec<[String; 4]> = all_rows
         .map(|r| {
+            let label = match r.f.details["name"].as_str() {
+                Some(name) => ui::truncate(name, 32),
+                None => ui::truncate(&r.f.kind, 16),
+            };
             [
                 human_bytes(r.f.size_bytes),
                 idle_days(r.f, now).map_or("–".into(), |d| format!("{d}d")),
-                ui::truncate(&r.f.kind, 16),
+                label,
                 r.path.clone(),
             ]
         })
@@ -473,7 +498,7 @@ fn generic_section(
             .max()
             .unwrap_or(0)
     };
-    let (ws, wi, wk) = (width(0, "SIZE"), width(1, "IDLE"), width(2, "KIND"));
+    let (ws, wi, wk) = (width(0, "SIZE"), width(1, "IDLE"), width(2, label_title));
     const WSTAT: usize = 9;
     const WTIER: usize = 6;
     // Rows sit under project headers when there are any; indent them all alike.
@@ -491,7 +516,7 @@ fn generic_section(
             pad_right("TIER", WTIER),
             pad_left("SIZE", ws),
             pad_left("IDLE", wi),
-            pad_right("KIND", wk),
+            pad_right(label_title, wk),
         ))
     )
     .ok();
