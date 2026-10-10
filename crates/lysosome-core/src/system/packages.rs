@@ -78,19 +78,27 @@ fn pnpm(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
         resolve(&env.tools(h), "pnpm", &["store", "path"], fallbacks).map(|p| {
             item("pnpm-store", p, "pnpm store")
                 .command(["pnpm", "store", "prune"])
-                .reason("package store; files hard-linked into node_modules are freed only when those projects drop them")
+                .reason("package store; `pnpm store prune` frees only packages no project uses, so this size is an upper bound")
+                .detail("size_is_upper_bound", true)
         }),
     )
 }
 
 fn yarn(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
     let h = &ctx.home;
-    let fallbacks = [
-        os_cache(env, h, "Yarn", "yarn"),
-        h.join(".yarn/berry/cache"),
-    ];
-    one(resolve(&env.tools(h), "yarn", &["cache", "dir"], fallbacks)
-        .map(|p| item("yarn-cache", p, "Yarn cache").command(["yarn", "cache", "clean"])))
+    let berry = h.join(".yarn/berry/cache");
+    let fallbacks = [os_cache(env, h, "Yarn", "yarn"), berry.clone()];
+    one(
+        resolve(&env.tools(h), "yarn", &["cache", "dir"], fallbacks).map(|p| {
+            // Yarn 2+ keeps a global mirror that only `--mirror` clears.
+            let argv: &[&str] = if p.starts_with(&berry) {
+                &["yarn", "cache", "clean", "--mirror"]
+            } else {
+                &["yarn", "cache", "clean"]
+            };
+            item("yarn-cache", p, "Yarn cache").command(argv.iter().copied())
+        }),
+    )
 }
 
 fn bun(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
@@ -148,7 +156,8 @@ fn conda(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
         .map(|p| {
             item("conda-pkgs", p, "conda package cache")
                 .command(["conda", "clean", "--all", "--yes"])
-                .reason("package cache; files hard-linked into environments stay until those environments are removed")
+                .reason("package cache; files hard-linked into environments stay until those environments are removed, so this size is an upper bound")
+                .detail("size_is_upper_bound", true)
         })
         .collect();
     finish(items)

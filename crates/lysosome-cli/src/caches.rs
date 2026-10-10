@@ -11,6 +11,7 @@ use lysosome_core::model::{Category, CleanupAction, Finding, Report, Skipped, St
 use lysosome_core::system::{self, RunOutput};
 use owo_colors::Style;
 
+use crate::progress::Spinner;
 use crate::ui::{self, human_bytes, pad_left, pad_right, plural, Painter, PathShortener};
 use crate::GlobalArgs;
 
@@ -81,20 +82,13 @@ pub fn run(args: &CachesArgs, global: &GlobalArgs) -> Result<String> {
 
     let start = Instant::now();
     let spinner = ui::stderr_is_tty().then(|| {
-        let pb =
-            indicatif::ProgressBar::with_draw_target(None, indicatif::ProgressDrawTarget::stderr());
-        pb.set_style(
-            indicatif::ProgressStyle::with_template("  {spinner:.cyan} {msg}")
-                .unwrap_or_else(|_| indicatif::ProgressStyle::default_spinner())
-                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ "),
-        );
-        pb.set_message("Checking caches, AI models, Docker, Xcode and editors");
-        pb.enable_steady_tick(Duration::from_millis(80));
-        pb
+        let s = Spinner::new(String::new());
+        s.set_message("Checking caches, AI models, Docker, Xcode and editors");
+        s
     });
     let out = system::run(&detectors, &ctx);
-    if let Some(pb) = spinner {
-        pb.finish_and_clear();
+    if let Some(s) = spinner {
+        s.clear();
     }
     let elapsed = start.elapsed();
 

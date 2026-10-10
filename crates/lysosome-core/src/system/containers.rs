@@ -82,21 +82,41 @@ fn pseudo(kind: &str, id: &str) -> PathBuf {
 /// Turn `docker system df -v --format json` into items.
 pub(super) fn docker_items(v: &Value) -> Vec<Item> {
     let mut items = Vec::new();
+    // `docker system df -v` lists an image once per tag; group rows by ID so
+    // a multi-tagged image is one finding counted once.
+    let mut images: Vec<(&str, Vec<&Value>)> = Vec::new();
     for img in v["Images"].as_array().into_iter().flatten() {
         let id = s(img, "ID");
         if id.is_empty() {
             continue;
         }
-        let (repo, tag) = (s(img, "Repository"), s(img, "Tag"));
+        match images.iter_mut().find(|(i, _)| *i == id) {
+            Some((_, rows)) => rows.push(img),
+            None => images.push((id, vec![img])),
+        }
+    }
+    for (id, rows) in images {
+        let img = rows[0];
+        let tags: Vec<String> = rows
+            .iter()
+            .filter_map(|r| {
+                let (repo, tag) = (s(r, "Repository"), s(r, "Tag"));
+                if repo.is_empty() || repo == "<none>" {
+                    None
+                } else if tag.is_empty() || tag == "<none>" {
+                    Some(repo.to_string())
+                } else {
+                    Some(format!("{repo}:{tag}"))
+                }
+            })
+            .collect();
         let short = id.trim_start_matches("sha256:");
         let short = &short[..short.len().min(12)];
-        let dangling = repo.is_empty() || repo == "<none>";
+        let dangling = tags.is_empty();
         let name = if dangling {
             format!("<untagged> {short}")
-        } else if tag.is_empty() || tag == "<none>" {
-            repo.to_string()
         } else {
-            format!("{repo}:{tag}")
+            tags.join(", ")
         };
         let total = bytes(img, "Size");
         let unique = if img.get("UniqueSize").is_some() {
@@ -104,7 +124,15 @@ pub(super) fn docker_items(v: &Value) -> Vec<Item> {
         } else {
             total
         };
-        let containers = count(img, "Containers");
+        let containers = rows
+            .iter()
+            .map(|r| count(r, "Containers"))
+            .max()
+            .unwrap_or(0);
+        // Docker doesn't report when an image was last used; CreatedAt is the
+        // build time, so it goes in details rather than last_activity.
+        let created = parse_timestamp(s(img, "CreatedAt"))
+            .map(|t| humantime::format_rfc3339_seconds(t).to_string());
         let mut item = Item::new(
             "docker-image",
             CAT,
@@ -113,8 +141,9 @@ pub(super) fn docker_items(v: &Value) -> Vec<Item> {
             Tier::RegenerableExpensive,
         )
         .size(unique)
-        .last_activity(parse_timestamp(s(img, "CreatedAt")))
         .detail("image_id", id)
+        .detail("tags", tags.clone())
+        .detail("created_at", created)
         .detail("total_bytes", total)
         .detail("shared_bytes", bytes(img, "SharedSize"))
         .detail("containers", containers)
@@ -127,13 +156,19 @@ pub(super) fn docker_items(v: &Value) -> Vec<Item> {
                 if containers == 1 { "" } else { "s" }
             ));
         } else {
-            item = item
-                .command(["docker", "image", "rm", id])
-                .reason(if dangling {
-                    "untagged image, not used by any container"
-                } else {
-                    "not used by any container; pulled or rebuilt on next use"
-                });
+            // Removing by ID fails for an image tagged in several
+            // repositories; removing every tag removes the image.
+            let mut argv = vec!["docker".to_string(), "image".into(), "rm".into()];
+            if dangling {
+                argv.push(id.to_string());
+            } else {
+                argv.extend(tags);
+            }
+            item = item.command(argv).reason(if dangling {
+                "untagged image, not used by any container"
+            } else {
+                "not used by any container; pulled or rebuilt on next use"
+            });
         }
         items.push(item);
     }
@@ -198,7 +233,15 @@ pub(super) fn docker_items(v: &Value) -> Vec<Item> {
 
 /// OrbStack keeps images, volumes and Linux machines in one data folder.
 fn orbstack(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
-    let _ = env;
+    // When OrbStack *is* the Docker engine, its images and volumes are already
+    // listed by the docker detector; reporting the whole data folder too would
+    // count them twice.
+    let context =
+        env.tools(&ctx.home)
+            .output_with_timeout("docker", ["context", "show"], env.probe_timeout);
+    if context.as_deref() == Some("orbstack") {
+        return Vec::new();
+    }
     orbstack_items(&ctx.home)
 }
 
@@ -217,7 +260,9 @@ fn orbstack_items(home: &Path) -> Vec<Finding> {
         "OrbStack data (containers, images, volumes, machines)",
         Tier::Review,
     )
-    .reason("manage from OrbStack; includes the Docker images listed above when OrbStack is your engine")])
+    .reason(
+        "OrbStack's VM disk (containers, images, volumes, machines); manage it from OrbStack",
+    )])
 }
 
 #[cfg(test)]
@@ -249,12 +294,20 @@ mod tests {
         assert_eq!(web.status, Status::Removable);
         assert_eq!(
             web.cleanup.as_ref().unwrap().command,
-            ["docker", "image", "rm", "sha256:aaaabbbbccccdddd"]
+            ["docker", "image", "rm", "web:1.0"]
         );
         let db = f.iter().find(|x| x.details["name"] == "db:latest").unwrap();
         assert_eq!(db.status, Status::Review);
         assert!(db.cleanup.is_none());
-        assert!(f.iter().any(|x| x.details["name"] == "<untagged> ffff0000"));
+        let untagged = f
+            .iter()
+            .find(|x| x.details["name"] == "<untagged> ffff0000")
+            .unwrap();
+        assert_eq!(
+            untagged.cleanup.as_ref().unwrap().command,
+            ["docker", "image", "rm", "sha256:ffff0000"]
+        );
+        assert!(web.last_activity.is_none(), "build time is not last use");
         let bc = testutil::by_kind(&f, "docker-build-cache");
         assert_eq!(bc[0].size_bytes, 40_000_000);
         assert_eq!(
@@ -265,6 +318,20 @@ mod tests {
         let vol = testutil::by_kind(&f, "docker-volume");
         assert_eq!(vol[0].status, Status::Review);
         assert_eq!(vol[0].tier, Tier::Review);
+    }
+
+    #[test]
+    fn multi_tagged_images_are_one_finding() {
+        let row = |tag: &str| json!({"Containers":"0","ID":"sha256:abc","Repository":"node","Tag":tag,"Size":"1GB","UniqueSize":"1GB","SharedSize":"0B"});
+        let v = json!({"Images": [row("20"), row("latest")]});
+        let f = finish(docker_items(&v));
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].size_bytes, 1_000_000_000);
+        assert_eq!(f[0].details["name"], "node:20, node:latest");
+        assert_eq!(
+            f[0].cleanup.as_ref().unwrap().command,
+            ["docker", "image", "rm", "node:20", "node:latest"]
+        );
     }
 
     #[test]

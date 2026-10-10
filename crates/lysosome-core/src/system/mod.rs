@@ -224,12 +224,16 @@ pub(crate) struct Item {
     pub reason: String,
     /// Known size; `None` means "measure `path`".
     pub size: Option<u64>,
-    /// Known last use; `None` means "derive from timestamps under `path`".
+    /// Known last use. `None` with an unknown size means "derive from
+    /// timestamps under `path`"; `None` with a known size means unknown.
     pub last_activity: Option<SystemTime>,
     /// Kind-specific details merged into `details`.
     pub details: Map<String, Value>,
     /// Bytes of a re-download (defaults to the size).
     pub redownload_bytes: Option<u64>,
+    /// Keep the finding even at 0 bytes (an Ollama tag whose layers are all
+    /// shared frees nothing on its own but must still be listed by name).
+    pub keep_empty: bool,
 }
 
 impl Item {
@@ -253,6 +257,7 @@ impl Item {
             last_activity: None,
             details: Map::new(),
             redownload_bytes: None,
+            keep_empty: false,
         }
     }
 
@@ -283,7 +288,7 @@ impl Item {
 }
 
 /// Measure (in parallel) and convert items. Items whose path doesn't exist or
-/// that measure 0 bytes are dropped.
+/// that measure 0 bytes are dropped (unless `keep_empty`).
 pub(crate) fn finish(items: Vec<Item>) -> Vec<Finding> {
     items
         .into_par_iter()
@@ -301,7 +306,7 @@ pub(crate) fn finish(items: Vec<Item>) -> Vec<Finding> {
                 item.size = Some(bytes);
             }
             let size = item.size.unwrap_or(0);
-            (size > 0).then(|| to_finding(item, size))
+            (size > 0 || item.keep_empty).then(|| to_finding(item, size))
         })
         .collect()
 }

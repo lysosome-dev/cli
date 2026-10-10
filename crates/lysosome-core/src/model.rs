@@ -98,12 +98,20 @@ pub enum CleanupAction {
     Trash,
 }
 
+impl CleanupAction {
+    fn default_command() -> Self {
+        CleanupAction::Command
+    }
+}
+
 /// How a user (or Milestone 4 `clean`) would remove a finding. Build it with
 /// [`Cleanup::command`] or [`Cleanup::trash`].
 ///
 /// JSON: `{"action":"command","command":[...]}` or `{"action":"trash","paths":[...]}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cleanup {
+    /// Defaults to `command` when reading reports written before `action` existed.
+    #[serde(default = "CleanupAction::default_command")]
     pub action: CleanupAction,
     /// argv of the cleanup command (no shell quoting needed). Empty for `trash`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

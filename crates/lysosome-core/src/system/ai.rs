@@ -88,7 +88,7 @@ pub(super) fn ollama_findings(models: &Path) -> Vec<Finding> {
         }
         let mut item = Item::new("ollama-model", CAT, m.path.clone(), &m.name, EXPENSIVE)
             .command(["ollama", "rm", m.name.as_str()])
-            .reason("re-downloaded with `ollama pull`")
+            .reason("re-downloaded with `ollama pull`; size_bytes counts only layers no other model uses")
             .size(unique)
             .last_activity(last)
             .detail("model", m.name.clone())
@@ -99,6 +99,7 @@ pub(super) fn ollama_findings(models: &Path) -> Vec<Finding> {
             item = item.detail("missing_layers", missing);
         }
         item.redownload_bytes = Some(total);
+        item.keep_empty = true;
         items.push(item);
     }
 
@@ -413,6 +414,24 @@ mod tests {
         assert_eq!(shared[0].status, Status::Review);
         assert!(shared[0].cleanup.is_none());
         assert_eq!(by_kind(&f, "ollama-unreferenced").len(), 1);
+    }
+
+    #[test]
+    fn ollama_aliases_sharing_every_layer_are_still_listed() {
+        let t = tempfile::tempdir().unwrap();
+        let m = t.path().join(".ollama/models");
+        write(&m.join("blobs/sha256-aaa"), 300_000);
+        write(&m.join("blobs/sha256-cfg"), 4_096);
+        manifest(&m, "registry.ollama.ai/library/llama3/latest", &["aaa"]);
+        manifest(&m, "registry.ollama.ai/library/llama3/8b", &["aaa"]);
+        let f = ollama(&bare_env(), &ctx(t.path()));
+        let models = by_kind(&f, "ollama-model");
+        assert_eq!(models.len(), 2, "both tags listed by name");
+        assert!(models.iter().all(|x| x.size_bytes == 0));
+        assert!(models
+            .iter()
+            .all(|x| x.details["redownload_bytes"].as_u64().unwrap() >= 300_000));
+        assert!(by_kind(&f, "ollama-shared-layers")[0].size_bytes >= 300_000);
     }
 
     #[test]

@@ -162,10 +162,7 @@ fn finds_every_fixture_with_names_tiers_and_cleanup() {
         .find(|f| f["details"]["name"] == "web:1.0")
         .unwrap();
     assert_eq!(web["size_bytes"], 1_100_000_000u64);
-    assert_eq!(
-        command(web),
-        ["docker", "image", "rm", "sha256:1111aaaa2222bbbb"]
-    );
+    assert_eq!(command(web), ["docker", "image", "rm", "web:1.0"]);
     let pg = findings(&r, "docker-image")
         .into_iter()
         .find(|f| f["details"]["name"] == "postgres:16")

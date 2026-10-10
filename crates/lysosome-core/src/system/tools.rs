@@ -9,8 +9,10 @@
 
 use std::ffi::{OsStr, OsString};
 use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Default per-call timeout for "where is your cache?" questions.
@@ -73,6 +75,9 @@ impl Tools {
         // report ETXTBSY on Linux; retry a few times.
         for attempt in 0..5 {
             let mut cmd = Command::new(&exe);
+            // Own process group, so a timeout kills wrapper scripts *and* the
+            // programs they started (pyenv shims, `brew`'s ruby, node...).
+            cmd.process_group(0);
             cmd.args(&args)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
@@ -95,17 +100,19 @@ impl Tools {
             }
         }
         let mut child = child?;
-        let reader = child.stdout.take().map(|mut out| {
+        let (tx, rx) = mpsc::channel();
+        if let Some(mut out) = child.stdout.take() {
             std::thread::spawn(move || {
                 let mut buf = Vec::new();
                 let _ = out.read_to_end(&mut buf);
-                buf
-            })
-        });
+                let _ = tx.send(buf);
+            });
+        }
         // Poll instead of `wait_timeout`: its SIGCHLD-based wait can miss an
         // exit when several threads wait on children at once.
         let deadline = Instant::now() + timeout;
         let mut pause = Duration::from_millis(2);
+        let pid = child.id();
         let status = loop {
             match child.try_wait() {
                 Ok(Some(s)) => break Some(s),
@@ -114,13 +121,25 @@ impl Tools {
                     pause = (pause * 2).min(Duration::from_millis(50));
                 }
                 _ => {
+                    kill_group(pid);
                     let _ = child.kill();
                     let _ = child.wait();
                     break None;
                 }
             }
         };
-        let stdout = reader.and_then(|r| r.join().ok()).unwrap_or_default();
+        // A leftover grandchild may still hold stdout open; never wait past
+        // the deadline for it.
+        let left = deadline
+            .saturating_duration_since(Instant::now())
+            .max(Duration::from_millis(100));
+        let stdout = match rx.recv_timeout(left) {
+            Ok(buf) => buf,
+            Err(_) => {
+                kill_group(pid);
+                return None;
+            }
+        };
         if !status?.success() {
             return None;
         }
@@ -139,7 +158,43 @@ impl Tools {
     }
 }
 
+/// SIGKILL the process group led by `pid` (see `process_group(0)` above).
+fn kill_group(pid: u32) {
+    if let Ok(pid) = libc::pid_t::try_from(pid) {
+        // SAFETY: plain syscall; a negative pid addresses the group we created.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+}
+
 fn is_executable(p: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn timeout_kills_grandchildren_holding_stdout() {
+        let t = tempfile::tempdir().unwrap();
+        let bin = t.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let script = bin.join("slowtool");
+        // A wrapper whose child (not exec'd) keeps stdout open.
+        std::fs::write(&script, "#!/bin/sh\n/bin/sleep 60\necho done\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tools = Tools::new(Some(bin.into_os_string()), None, Duration::from_millis(300));
+        let start = Instant::now();
+        let out = tools.output("slowtool", ["x"]);
+        assert!(out.is_none());
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            start.elapsed()
+        );
+    }
 }
