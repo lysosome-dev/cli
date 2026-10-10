@@ -13,12 +13,17 @@ All notable changes to this project are documented here. The format follows
 
 - Scanning could write to disk (#13): with corepack's `pnpm` shim on `PATH`,
   asking `pnpm store path` downloaded pnpm into `~/.cache/node/corepack`.
-  Corepack shims (and Volta's, which can also fetch pinned versions) are now
-  never run during a scan; the pnpm store and Yarn cache are found at their
-  default locations instead (`$PNPM_HOME/store`, `$XDG_DATA_HOME/pnpm/store`,
-  `~/Library/pnpm/store`; `$YARN_CACHE_FOLDER`,
-  `~/Library/Caches/Yarn`, `~/.cache/yarn`, `~/.yarn/berry/cache`). Yarn is no
-  longer asked at all, since `yarn cache dir` creates a missing cache folder.
+  `pnpm` is now asked only when it is a real pnpm install; behind corepack,
+  Volta or a version-manager shim (asdf, mise...) the store is found from
+  `store-dir` (`npm_config_store_dir`, `~/.npmrc`, pnpm's `rc`) or the default
+  locations (`$PNPM_HOME/store`, `$XDG_DATA_HOME/pnpm/store`,
+  `~/Library/pnpm/store`, `~/.local/share/pnpm/store`). Yarn is no longer
+  asked at all, since `yarn cache dir` creates a missing cache folder: its
+  cache comes from `$YARN_CACHE_FOLDER`, `cache-folder` in `~/.yarnrc`, or the
+  defaults (`~/Library/Caches/Yarn`, `~/.cache/yarn`, Yarn 2+'s
+  `$XDG_DATA_HOME/yarn/berry/cache` or `~/.yarn/berry/cache`). Both report the
+  current versioned folder (`store/v10`, `Yarn/v6`), the part their cleanup
+  command clears.
 - Every tool a scan asks (`pnpm`, `pip`, `uv`, `go`, `brew`, `docker`,
   `xcrun`) now runs from `/` with only the scan's environment plus switches
   that turn off downloads, self-updates, auto-installs and bytecode writes
@@ -27,6 +32,9 @@ All notable changes to this project are documented here. The format follows
   `PYTHONDONTWRITEBYTECODE=1`, `MISE_EXEC_AUTO_INSTALL=false`...), so a
   project's `packageManager` field or `go.mod` toolchain line can't make a
   tool fetch itself.
+- `lysosome clean` runs cache cleanup commands from `/` with corepack's
+  auto-pin and strict mode off, so the folder you run it from can't pick a
+  different pnpm/Yarn version or have its `package.json` edited.
 
 ## [0.2.0] - 2026-10-10
 

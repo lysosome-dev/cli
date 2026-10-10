@@ -18,6 +18,7 @@
 //!     so they are never run during a scan (callers fall back to well-known
 //!     paths).
 
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::os::unix::process::CommandExt;
@@ -71,7 +72,7 @@ pub const SCAN_ENV: &[(&str, &str)] = &[
 pub struct Tools {
     path: Option<OsString>,
     home: Option<PathBuf>,
-    env: Arc<[(OsString, OsString)]>,
+    env: Arc<HashMap<String, OsString>>,
     timeout: Duration,
 }
 
@@ -82,14 +83,14 @@ impl Tools {
         Tools {
             path,
             home,
-            env: Arc::new([]),
+            env: Arc::default(),
             timeout,
         }
     }
 
     /// Base environment for children (`PATH`, `HOME` and [`SCAN_ENV`] still win;
     /// `PWD` / `OLDPWD` are dropped since children run in `/`).
-    pub fn with_env(mut self, vars: Arc<[(OsString, OsString)]>) -> Self {
+    pub fn with_env(mut self, vars: Arc<HashMap<String, OsString>>) -> Self {
         self.env = vars;
         self
     }
@@ -145,8 +146,7 @@ impl Tools {
                 .envs(
                     self.env
                         .iter()
-                        .filter(|(k, _)| k != "PWD" && k != "OLDPWD")
-                        .map(|(k, v)| (k, v)),
+                        .filter(|(k, _)| *k != "PWD" && *k != "OLDPWD"),
                 );
             if let Some(p) = &self.path {
                 cmd.env("PATH", p);
@@ -384,8 +384,9 @@ mod tests {
                 ("PWD", "/some/project"),
             ]
             .into_iter()
-            .map(|(k, v)| (k.into(), v.into()))
-            .collect(),
+            .map(|(k, v)| (k.to_string(), v.into()))
+            .collect::<HashMap<_, _>>()
+            .into(),
         );
         let out = tools.output("envtool", ["x"]).unwrap();
         let mut lines = out.lines();

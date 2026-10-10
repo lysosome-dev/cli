@@ -13,6 +13,15 @@ use serde::Serialize;
 use super::log::ActionLog;
 use super::process::{self, Proc};
 use super::recheck::{self, Ctx};
+
+/// Set on cleanup commands: corepack may fetch the tool (cleaning is an
+/// explicit request) but never pins or edits a package.json, nor refuses to
+/// run over a project's `packageManager` mismatch.
+const CLEAN_ENV: &[(&str, &str)] = &[
+    ("COREPACK_ENABLE_AUTO_PIN", "0"),
+    ("COREPACK_ENABLE_STRICT", "0"),
+    ("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0"),
+];
 use super::{worktree_remove_argv, ActionKind, Guard, Plan, PlanItem};
 use crate::git::{Git, REPO_ENV_VARS};
 use crate::model::Status;
@@ -590,6 +599,7 @@ impl<'a> Executor<'a> {
             args: &remove_args,
             env: &env,
             env_remove: REPO_ENV_VARS,
+            cwd: None,
             timeout: self.git_timeout,
         });
         let out = match out {
@@ -626,6 +636,7 @@ impl<'a> Executor<'a> {
             args: &hardened(&["worktree", "prune"]),
             env: &env,
             env_remove: REPO_ENV_VARS,
+            cwd: None,
             timeout: self.git_timeout,
         })
         .is_ok_and(|o| o.success);
@@ -658,11 +669,20 @@ impl<'a> Executor<'a> {
         planned: u64,
     ) -> ItemResult {
         let dest = Some("command".to_string());
+        // Run from `/`: a `packageManager` field (or `.tool-versions`...) in
+        // the user's current folder must not pick a different tool version
+        // than the one whose cache was planned, and corepack must never pin
+        // or edit a package.json while cleaning.
+        let env: Vec<(OsString, OsString)> = CLEAN_ENV
+            .iter()
+            .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+            .collect();
         let out = match process::run(&Proc {
             program,
             args: &argv[1..],
-            env: &[],
+            env: &env,
             env_remove: &[],
+            cwd: Some(Path::new("/")),
             timeout: self.command_timeout,
         }) {
             Ok(o) => o,

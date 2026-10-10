@@ -54,6 +54,8 @@ pub(crate) struct Proc<'a> {
     pub args: &'a [String],
     pub env: &'a [(OsString, OsString)],
     pub env_remove: &'a [&'a str],
+    /// Working directory (default: inherited).
+    pub cwd: Option<&'a Path>,
     pub timeout: Duration,
 }
 
@@ -89,6 +91,9 @@ pub(crate) fn run(spec: &Proc<'_>) -> std::io::Result<ProcOutput> {
     }
     for (k, v) in spec.env {
         cmd.env(k, v);
+    }
+    if let Some(d) = spec.cwd {
+        cmd.current_dir(d);
     }
     let mut child = None;
     let mut last_err = None;
@@ -225,6 +230,7 @@ mod tests {
             args: &args,
             env: &[],
             env_remove: &[],
+            cwd: None,
             timeout: Duration::from_secs(20),
         })
         .unwrap();
@@ -239,6 +245,7 @@ mod tests {
             args: &args,
             env: &[],
             env_remove: &[],
+            cwd: None,
             timeout: Duration::from_millis(300),
         })
         .unwrap();

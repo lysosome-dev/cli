@@ -65,52 +65,133 @@ fn npm(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
         .map(|p| item("npm-cache", p, "npm cache").command(["npm", "cache", "clean", "--force"])))
 }
 
-/// pnpm's store. Asks `pnpm store path`; when `pnpm` is corepack's (or
-/// Volta's) shim, which could download pnpm first, [`Tools`] refuses to run
-/// it and pnpm's default store locations are checked instead.
-fn pnpm(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
-    let h = &ctx.home;
-    let mut fallbacks = Vec::new();
-    if let Some(p) = env.var_path("PNPM_HOME") {
-        fallbacks.push(p.join("store"));
-    }
-    // pnpm's own order: $PNPM_HOME, $XDG_DATA_HOME, then the OS default.
-    if let Some(p) = env.var_path("XDG_DATA_HOME") {
-        fallbacks.push(p.join("pnpm/store"));
-    }
-    if cfg!(target_os = "macos") {
-        fallbacks.push(h.join("Library/pnpm/store"));
-    }
-    fallbacks.push(h.join(".local/share/pnpm/store"));
-    fallbacks.push(h.join(".pnpm-store"));
-    one(
-        resolve(&env.tools(h), "pnpm", &["store", "path"], fallbacks).map(|p| {
-            item("pnpm-store", p, "pnpm store")
-                .command(["pnpm", "store", "prune"])
-                .reason("package store; `pnpm store prune` frees only packages no project uses, so this size is an upper bound")
-                .detail("size_is_upper_bound", true)
-        }),
-    )
+/// `key` from a simple rc file: `key=value` (`.npmrc`, pnpm's `rc`) or
+/// `key value` / `key "value"` (`.yarnrc`). `~/` is expanded; anything that
+/// isn't then an absolute path is ignored.
+fn rc_path(file: &Path, key: &str, home: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(file).ok()?;
+    text.lines().find_map(|l| {
+        let rest = l.trim().strip_prefix(key)?;
+        if !rest.starts_with(['=', ' ', '\t']) {
+            return None; // `keyfoo=...`, a different key
+        }
+        let v = rest.trim_start();
+        let v = v.strip_prefix('=').unwrap_or(v).trim();
+        let v = v.trim_matches('"');
+        let p = match v.strip_prefix("~/") {
+            Some(r) => home.join(r),
+            None => PathBuf::from(v),
+        };
+        p.is_absolute().then_some(p)
+    })
 }
 
-/// Yarn's cache, from `YARN_CACHE_FOLDER` or the default locations. Yarn is
-/// never asked: `yarn cache dir` creates the cache folder when it is missing
-/// (and through corepack can download Yarn itself), which a scan must not do.
+/// The newest `v<N>` layout folder inside a store/cache root (what the tool
+/// itself reports and what its cleanup command clears), else the root.
+fn versioned(root: PathBuf) -> PathBuf {
+    super::subdirs(&root)
+        .into_iter()
+        .filter_map(|d| {
+            let n = d
+                .file_name()?
+                .to_str()?
+                .strip_prefix('v')?
+                .parse::<u32>()
+                .ok()?;
+            Some((n, d))
+        })
+        .max_by_key(|(n, _)| *n)
+        .map_or(root, |(_, d)| d)
+}
+
+/// Whether the `pnpm` on PATH is a real pnpm install (npm global, Homebrew,
+/// the standalone installer, `@pnpm/exe`): some folder above it is named
+/// `pnpm…` / `@pnpm`. Corepack, Volta and version-manager shims (asdf, mise,
+/// nodenv) are not, and may run corepack behind the shim.
+fn real_pnpm(tools: &Tools) -> bool {
+    let Some(exe) = tools.which("pnpm") else {
+        return false;
+    };
+    let resolved = std::fs::canonicalize(&exe).unwrap_or(exe);
+    resolved.parent().is_some_and(|dir| {
+        dir.ancestors()
+            .filter_map(|a| a.file_name()?.to_str())
+            .any(|n| n.starts_with("pnpm") || n == "@pnpm")
+    })
+}
+
+/// pnpm's store. Asks `pnpm store path` only when `pnpm` is a real install;
+/// behind corepack (or a Volta / version-manager shim, which may hand off to
+/// corepack) asking could download pnpm, so then the configured and default
+/// store locations are checked instead.
+fn pnpm(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
+    let h = &ctx.home;
+    let tools = env.tools(h);
+    let asked = real_pnpm(&tools)
+        .then(|| tools.dir_output("pnpm", ["store", "path"]))
+        .flatten();
+    let found = asked.or_else(|| {
+        let mut c = Vec::new();
+        for k in [
+            "pnpm_config_store_dir",
+            "npm_config_store_dir",
+            "NPM_CONFIG_STORE_DIR",
+        ] {
+            c.extend(env.var_path(k));
+        }
+        let config = env
+            .var_path("XDG_CONFIG_HOME")
+            .unwrap_or_else(|| h.join(".config"));
+        let mut rcs = vec![config.join("pnpm/rc")];
+        if cfg!(target_os = "macos") {
+            rcs.push(h.join("Library/Preferences/pnpm/rc"));
+        }
+        rcs.push(
+            env.var_path("NPM_CONFIG_USERCONFIG")
+                .unwrap_or_else(|| h.join(".npmrc")),
+        );
+        c.extend(rcs.iter().filter_map(|rc| rc_path(rc, "store-dir", h)));
+        // pnpm's own default order: $PNPM_HOME, $XDG_DATA_HOME, the OS default.
+        c.extend(env.var_path("PNPM_HOME").map(|p| p.join("store")));
+        c.extend(env.var_path("XDG_DATA_HOME").map(|p| p.join("pnpm/store")));
+        if cfg!(target_os = "macos") {
+            c.push(h.join("Library/pnpm/store"));
+        }
+        c.push(h.join(".local/share/pnpm/store"));
+        c.push(h.join(".pnpm-store"));
+        first_dir(c).map(versioned)
+    });
+    one(found.map(|p| {
+        item("pnpm-store", p, "pnpm store")
+            .command(["pnpm", "store", "prune"])
+            .reason("package store; `pnpm store prune` frees only packages no project uses, so this size is an upper bound")
+            .detail("size_is_upper_bound", true)
+    }))
+}
+
+/// Yarn's cache, from `YARN_CACHE_FOLDER`, `~/.yarnrc` or the default
+/// locations. Yarn is never asked: `yarn cache dir` creates the cache folder
+/// when it is missing (and through corepack can download Yarn itself), which a
+/// scan must not do.
 fn yarn(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
     let h = &ctx.home;
-    let berry = h.join(".yarn/berry/cache");
-    let mut candidates = Vec::new();
-    candidates.extend(env.var_path("YARN_CACHE_FOLDER"));
-    candidates.push(os_cache(env, h, "Yarn", "yarn"));
-    candidates.push(berry.clone());
-    one(first_dir(candidates).map(|p| {
+    let mut c = Vec::new();
+    c.extend(env.var_path("YARN_CACHE_FOLDER"));
+    c.extend(rc_path(&h.join(".yarnrc"), "cache-folder", h));
+    c.push(os_cache(env, h, "Yarn", "yarn"));
+    // Yarn 2+ global cache: `$XDG_DATA_HOME/yarn/berry` or `~/.yarn/berry`.
+    c.extend(
+        env.var_path("XDG_DATA_HOME")
+            .map(|p| p.join("yarn/berry/cache")),
+    );
+    c.push(h.join(".yarn/berry/cache"));
+    one(first_dir(c).map(|p| {
         // Yarn 2+ keeps a global mirror that only `--mirror` clears.
-        let argv: &[&str] = if p.starts_with(&berry) {
-            &["yarn", "cache", "clean", "--mirror"]
+        if p.ends_with("berry/cache") {
+            item("yarn-cache", p, "Yarn cache").command(["yarn", "cache", "clean", "--mirror"])
         } else {
-            &["yarn", "cache", "clean"]
-        };
-        item("yarn-cache", p, "Yarn cache").command(argv.iter().copied())
+            item("yarn-cache", versioned(p), "Yarn cache").command(["yarn", "cache", "clean"])
+        }
     }))
 }
 
@@ -308,5 +389,106 @@ mod tests {
             [h.join(".cargo/registry")]
         );
         assert!(by_kind(&all, "pip-cache").is_empty());
+    }
+
+    fn exe(path: &Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn rc_files_and_versioned_layouts() {
+        let t = tempfile::tempdir().unwrap();
+        let h = t.path();
+        std::fs::write(
+            h.join(".npmrc"),
+            "store-dir-other=/nope\nregistry=https://x\n  store-dir = ~/big/store\n",
+        )
+        .unwrap();
+        assert_eq!(
+            rc_path(&h.join(".npmrc"), "store-dir", h),
+            Some(h.join("big/store"))
+        );
+        std::fs::write(h.join(".yarnrc"), "cache-folder \"/abs/yarn\"\n").unwrap();
+        assert_eq!(
+            rc_path(&h.join(".yarnrc"), "cache-folder", h),
+            Some(PathBuf::from("/abs/yarn"))
+        );
+        std::fs::write(h.join("rel"), "store-dir=relative/path\n").unwrap();
+        assert_eq!(rc_path(&h.join("rel"), "store-dir", h), None);
+        assert_eq!(rc_path(&h.join("missing"), "store-dir", h), None);
+
+        for d in ["root/v3", "root/v10", "root/v9", "root/vx", "flat/files"] {
+            std::fs::create_dir_all(h.join(d)).unwrap();
+        }
+        assert_eq!(versioned(h.join("root")), h.join("root/v10"));
+        assert_eq!(versioned(h.join("flat")), h.join("flat"));
+    }
+
+    #[test]
+    fn pnpm_is_asked_only_when_it_is_a_real_install() {
+        let t = tempfile::tempdir().unwrap();
+        let h = t.path().join("home");
+        let marker = t.path().join("asked");
+        let reported = t.path().join("reported-store");
+        write(&reported.join("x"), 10_000);
+        let default = h.join(if cfg!(target_os = "macos") {
+            "Library/pnpm/store/v10"
+        } else {
+            ".local/share/pnpm/store/v10"
+        });
+        write(&default.join("files/x"), 10_000);
+        let body = format!(
+            "#!/bin/sh\n/usr/bin/touch '{}'\necho '{}'\n",
+            marker.display(),
+            reported.display()
+        );
+        let bin = t.path().join("bin");
+        let run = || {
+            let env = SystemEnv::isolated([("PATH", bin.clone())]);
+            pnpm(&env, &ctx(&h))
+        };
+
+        // An asdf/mise-style shim (may run corepack behind it): never asked.
+        exe(&bin.join("pnpm"), &format!("{body}# asdf exec pnpm\n"));
+        let f = run();
+        assert!(!marker.exists(), "a version-manager shim was run");
+        assert_eq!(f[0].path, default);
+
+        // npm-global layout: bin/pnpm -> ../lib/node_modules/pnpm/bin/pnpm.cjs
+        std::fs::remove_file(bin.join("pnpm")).unwrap();
+        let real = t.path().join("lib/node_modules/pnpm/bin/pnpm.cjs");
+        exe(&real, &body);
+        std::os::unix::fs::symlink(&real, bin.join("pnpm")).unwrap();
+        let f = run();
+        assert!(marker.exists());
+        assert_eq!(f[0].path, reported);
+    }
+
+    #[test]
+    fn yarn_reads_yarnrc_and_xdg_berry() {
+        let t = tempfile::tempdir().unwrap();
+        let h = t.path();
+        write(&h.join("custom/v6/npm-a/x"), 10_000);
+        std::fs::write(h.join(".yarnrc"), "cache-folder ~/custom\n").unwrap();
+        let f = yarn(&bare_env(), &ctx(h));
+        assert_eq!(f[0].path, h.join("custom/v6"));
+        assert_eq!(
+            f[0].cleanup.as_ref().unwrap().command,
+            ["yarn", "cache", "clean"]
+        );
+
+        std::fs::remove_file(h.join(".yarnrc")).unwrap();
+        std::fs::remove_dir_all(h.join("custom")).unwrap();
+        write(&h.join("data/yarn/berry/cache/a.zip"), 10_000);
+        let env = SystemEnv::isolated([("XDG_DATA_HOME", h.join("data"))]);
+        let f = yarn(&env, &ctx(h));
+        assert_eq!(f[0].path, h.join("data/yarn/berry/cache"));
+        assert_eq!(
+            f[0].cleanup.as_ref().unwrap().command,
+            ["yarn", "cache", "clean", "--mirror"]
+        );
     }
 }

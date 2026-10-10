@@ -664,12 +664,12 @@ fn corepack_shims_are_never_run_by_a_scan_or_dry_run() {
     };
     assert_eq!(
         path_of("pnpm-store"),
-        Some(store.clone()),
+        Some(store.join("v10")),
         "default store found"
     );
     assert_eq!(
         path_of("yarn-cache"),
-        Some(yarn.clone()),
+        Some(yarn.join("v6")),
         "default cache found"
     );
     for args in [
@@ -712,8 +712,10 @@ fn corepack_shims_are_never_run_by_a_scan_or_dry_run() {
     );
 }
 
-/// A real (non-corepack) pnpm is still asked, but only with downloads and
-/// self-management turned off and from `/`, never the user's project folder.
+/// A real pnpm install (here npm-global style: bin/pnpm ->
+/// lib/node_modules/pnpm/bin/pnpm.cjs) is still asked, but only with
+/// downloads and self-management turned off and from `/`, never the user's
+/// project folder.
 #[test]
 fn real_pnpm_is_asked_with_downloads_disabled() {
     let fx = Fixture::new("make_caches.sh");
@@ -721,8 +723,9 @@ fn real_pnpm_is_asked_with_downloads_disabled() {
     let custom = fx.p("home/custom-pnpm-store");
     fs::create_dir_all(custom.join("v10")).unwrap();
     fs::write(custom.join("v10/blob"), vec![b'x'; 64 * 1024]).unwrap();
+    let real = fx.p("node/lib/node_modules/pnpm/bin/pnpm.cjs");
     script(
-        &fx.p("bin/pnpm"),
+        &real,
         &format!(
             "#!/bin/sh\n\
              [ \"$COREPACK_ENABLE_NETWORK\" = 0 ] && [ \"$COREPACK_ENABLE_DOWNLOAD_PROMPT\" = 0 ] \\\n\
@@ -733,6 +736,8 @@ fn real_pnpm_is_asked_with_downloads_disabled() {
             custom.display()
         ),
     );
+    let _ = fs::remove_file(fx.p("bin/pnpm"));
+    std::os::unix::fs::symlink(&real, fx.p("bin/pnpm")).unwrap();
     let before = snapshot(&fx.dest);
     let out = caches_cmd(&fx)
         .env("COREPACK_ENABLE_NETWORK", "1")

@@ -47,9 +47,8 @@ pub use tools::Tools;
 /// one instead of inheriting the process environment.
 #[derive(Debug, Clone)]
 pub struct SystemEnv {
-    vars: HashMap<String, OsString>,
-    /// `vars` as handed to tool subprocesses, built once.
-    child_env: Arc<[(OsString, OsString)]>,
+    /// Shared with every [`Tools`] runner as its children's base environment.
+    vars: Arc<HashMap<String, OsString>>,
     /// Timeout for ordinary "where is your cache?" tool calls.
     pub tool_timeout: Duration,
     /// Timeout for quick liveness probes (is the Docker daemon up?).
@@ -68,8 +67,7 @@ impl SystemEnv {
             .and_then(|v| v.to_str()?.parse::<u64>().ok())
             .map(Duration::from_millis);
         SystemEnv {
-            child_env: child_env(&vars),
-            vars,
+            vars: Arc::new(vars),
             tool_timeout: overridden.unwrap_or(tools::DEFAULT_TOOL_TIMEOUT),
             probe_timeout: overridden.unwrap_or(tools::DEFAULT_PROBE_TIMEOUT),
         }
@@ -86,8 +84,7 @@ impl SystemEnv {
             .map(|(k, v)| (k.into(), v.into()))
             .collect();
         SystemEnv {
-            child_env: child_env(&vars),
-            vars,
+            vars: Arc::new(vars),
             tool_timeout: tools::DEFAULT_TOOL_TIMEOUT,
             probe_timeout: tools::DEFAULT_PROBE_TIMEOUT,
         }
@@ -111,7 +108,7 @@ impl SystemEnv {
             Some(home.to_path_buf()),
             self.tool_timeout,
         )
-        .with_env(self.child_env.clone())
+        .with_env(Arc::clone(&self.vars))
     }
 
     /// `$XDG_CACHE_HOME`, else `~/.cache`.
@@ -119,12 +116,6 @@ impl SystemEnv {
         self.var_path("XDG_CACHE_HOME")
             .unwrap_or_else(|| home.join(".cache"))
     }
-}
-
-fn child_env(vars: &HashMap<String, OsString>) -> Arc<[(OsString, OsString)]> {
-    vars.iter()
-        .map(|(k, v)| (OsString::from(k), v.clone()))
-        .collect()
 }
 
 type ScanFn = fn(&SystemEnv, &ScanContext<'_>) -> Vec<Finding>;
