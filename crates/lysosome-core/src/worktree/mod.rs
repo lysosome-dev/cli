@@ -300,6 +300,7 @@ pub fn scan(opts: &ScanOptions, progress: &dyn Progress) -> Result<WorktreeScan>
             candidates: found.candidates,
             stale: found.stale,
             walk: found.walk,
+            pre: None,
         },
         timings,
         started,
@@ -314,6 +315,9 @@ pub(crate) struct Found {
     pub candidates: Vec<discover::Candidate>,
     pub stale: Vec<StaleMetadata>,
     pub walk: WalkStats,
+    /// Gitdir timestamps already read (one per candidate, same order), when
+    /// the caller had to read them before starting other git work.
+    pub pre: Option<Vec<analyze::PreGit>>,
 }
 
 /// Phases 2–4 (git ∥ size, then ignore-check) over already-discovered worktrees.
@@ -331,12 +335,14 @@ pub(crate) fn analyze_found(
         candidates,
         stale,
         walk,
+        pre,
     } = found;
 
     // 2+3. git analysis and size measurement are independent, so they run
     // concurrently: git on its bounded pool, sizing on the global pool.
     // Timestamps for *every* worktree are read before any git process starts.
-    let pre: Vec<_> = candidates.par_iter().map(analyze::read_pre_git).collect();
+    let pre: Vec<_> =
+        pre.unwrap_or_else(|| candidates.par_iter().map(analyze::read_pre_git).collect());
     progress.start(Phase::Analyze, Some(2 * candidates.len() as u64));
     let (git_out, size_out) = std::thread::scope(|s| {
         let git_job = s.spawn(|| {

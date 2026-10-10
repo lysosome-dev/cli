@@ -106,7 +106,7 @@ pub(crate) fn idle(activity_secs: f64, now: SystemTime) -> (Option<i64>, Option<
     )
 }
 
-pub(crate) fn mtime_secs(p: &Path) -> f64 {
+fn mtime_secs(p: &Path) -> f64 {
     fs::metadata(p)
         .and_then(|m| m.modified())
         .ok()

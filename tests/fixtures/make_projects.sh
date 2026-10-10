@@ -16,12 +16,16 @@
 #     build/              TRACKED, 2 MiB: never an artifact
 #     coverage/           untracked but NOT ignored: never an artifact
 #     target -> big/      symlink named like an artifact: never followed or counted
+#     packages/inner/     nested independent repo (ignored by old-web), idle since 2020
+#       target/           ignored, 1 MiB          REMOVABLE regenerable (owned by inner)
 #     .venv/src/mylib/.git  ignored .venv holding an editable git checkout:
 #                         REVIEW (tier review, no cleanup) — it may hold local work
 #   code/old-rust         repo idle since 2020
 #     target/             ignored, 3 MiB          REMOVABLE regenerable
 #   code/old-edited       repo committed in 2020 but with a tracked file edited now
 #     node_modules/       ignored, 1 MiB          ACTIVE (uncommitted edits count as activity)
+#   code/old-scratch      repo committed in 2020; old untracked scratch/ folder with a file
+#     node_modules/       edited now: ignored, 1 MiB, ACTIVE
 #   code/fresh-py         repo with a commit made now
 #     .venv/              ignored, 2 MiB          ACTIVE regenerable_expensive
 #   code/mono             repo idle since 2020 (remote: remote.git), no artifacts itself
@@ -31,6 +35,8 @@
 #                         counted in the worktree's size only, never an artifact finding
 #   code/mono-active-wt   active worktree of mono with ignored node_modules (1 MiB):
 #                         ACTIVE artifact finding (project_kind "worktree")
+#   code/mono-active-wt/vendor/lib2  idle repo nested in the active worktree with ignored
+#                         dist/ (1 MiB): reported once, as the worktree's ACTIVE artifact
 #   code/loose/node_modules   not inside any repo: never counted
 #   big/                  30 MiB folder outside the scan root (symlink target)
 set -euo pipefail
@@ -86,7 +92,7 @@ mib "$DEST/big" blob.bin 30
 # --- old-web ------------------------------------------------------------------
 W="$CODE/old-web"
 q git init "$W"
-printf 'node_modules/\ndist/\n.venv/\n' > "$W/.gitignore"
+printf 'node_modules/\ndist/\n.venv/\npackages/inner/\n' > "$W/.gitignore"
 mib "$W/build" tracked.bin 2
 printf '# web\n' > "$W/README.md"
 mkdir -p "$W/packages/api"
@@ -100,6 +106,12 @@ mib "$W/dist" app.bin 1
 mib "$W/packages/api/node_modules/lib" lib.bin 1
 mib "$W/coverage" lcov.bin 1
 ln -s "$DEST/big" "$W/target"
+I="$W/packages/inner"
+q git init "$I"
+printf 'target/\n' > "$I/.gitignore"
+git -C "$I" add .gitignore
+old_commit "$I" "inner"
+mib "$I/target" t.bin 1
 mkdir -p "$W/.venv/src"
 q git init "$W/.venv/src/mylib"
 printf 'local edits\n' > "$W/.venv/src/mylib/lib.py"
@@ -113,6 +125,19 @@ git -C "$E" add .gitignore README.md
 old_commit "$E" "initial"
 mib "$E/node_modules/x" x.bin 1
 printf 'work in progress\n' >> "$E/README.md"
+
+# --- old-scratch --------------------------------------------------------------
+X="$CODE/old-scratch"
+q git init "$X"
+printf 'node_modules/\n' > "$X/.gitignore"
+git -C "$X" add .gitignore
+old_commit "$X" "initial"
+mib "$X/node_modules/x" x.bin 1
+mkdir -p "$X/scratch"
+printf 'old notes\n' > "$X/scratch/old.txt"
+touch -t "$OLD_TOUCH" "$X/scratch/old.txt"
+printf 'edited today\n' > "$X/scratch/notes.txt"
+touch -t "$OLD_TOUCH" "$X/scratch"
 
 # --- old-rust -----------------------------------------------------------------
 R="$CODE/old-rust"
@@ -153,6 +178,12 @@ old_commit "$L" "vendored"
 mib "$L/dist" lib.bin 1
 q git -C "$M" worktree add -b active-wt "$CODE/mono-active-wt"
 mib "$CODE/mono-active-wt/node_modules/dep" dep.bin 1
+L2="$CODE/mono-active-wt/vendor/lib2"
+q git init "$L2"
+printf 'dist/\n' > "$L2/.gitignore"
+git -C "$L2" add .gitignore
+old_commit "$L2" "vendored"
+mib "$L2/dist" lib.bin 1
 
 # --- not a repo ---------------------------------------------------------------
 mib "$CODE/loose/node_modules/x" x.bin 1
@@ -165,6 +196,9 @@ touch -h -t "$OLD_TOUCH" "$W/target"
 backdate_gitdir "$W/.git"
 backdate_gitdir "$R/.git"
 backdate_gitdir "$E/.git"
+backdate_gitdir "$X/.git"
+backdate_gitdir "$I/.git"
+backdate_gitdir "$L2/.git"
 backdate_gitdir "$M/.git"
 backdate_gitdir "$M/.git/worktrees/mono-old-wt"
 backdate_gitdir "$L/.git"

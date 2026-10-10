@@ -130,6 +130,21 @@ fn artifact_statuses_tiers_and_exclusions() {
             "old-rust/target",
             ("REMOVABLE", "regenerable", "target", "repo"),
         ),
+        // Nested independent repo owns its own artifacts.
+        (
+            "old-web/packages/inner/target",
+            ("REMOVABLE", "regenerable", "target", "repo"),
+        ),
+        // A file edited today inside an old untracked folder: in use.
+        (
+            "old-scratch/node_modules",
+            ("ACTIVE", "regenerable_expensive", "node_modules", "repo"),
+        ),
+        // A repo nested in an active worktree: reported once, via the worktree.
+        (
+            "mono-active-wt/vendor/lib2/dist",
+            ("ACTIVE", "regenerable", "dist", "worktree"),
+        ),
         // An editable git checkout inside .venv: never offered for cleanup.
         ("old-web/.venv", ("REVIEW", "review", ".venv", "repo")),
         // Old commit, but a tracked file edited now: in use.
@@ -211,10 +226,13 @@ fn deep_artifacts_and_roots_inside_worktrees() {
         .filter(|f| f["category"] == "artifacts")
         .map(|f| fx.rel(f))
         .collect();
-    assert!(
-        arts.contains(&"old-web/packages/api/node_modules".to_string()),
-        "{arts:?}"
-    );
+    for want in [
+        "old-web/packages/api/node_modules",
+        // a repo found only below the depth limit still owns its artifacts
+        "old-web/packages/inner/target",
+    ] {
+        assert!(arts.contains(&want.to_string()), "{want}: {arts:?}");
+    }
 
     // A root inside a linked worktree still analyzes that worktree.
     let sub = fx.code().join("mono-old-wt/vendor");
@@ -258,9 +276,16 @@ fn totals_are_honest_and_nothing_is_double_counted() {
             "{cat}"
         );
     }
-    // 5 + 1 + 1 + 3 MiB of idle project artifacts.
+    // 5 + 1 + 1 + 1 + 3 MiB of idle project artifacts (+ the small REVIEW .venv).
     let arts = s["by_category"]["artifacts"].as_u64().unwrap();
-    assert!((10 * MIB..11 * MIB).contains(&arts), "{arts}");
+    assert!((11 * MIB..12 * MIB).contains(&arts), "{arts}");
+
+    // Every finding is reported exactly once.
+    let mut ids: Vec<&str> = all.iter().map(|f| f["id"].as_str().unwrap()).collect();
+    let n = ids.len();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), n, "duplicate finding ids");
 
     // The dormant worktree's artifacts live only in the worktree finding.
     let old_wt = all
@@ -419,7 +444,7 @@ fn table_output_is_sectioned_and_plain_when_piped() {
         "no ANSI codes when piped:\n{text}"
     );
     for needle in [
-        "2 projects untouched for 30+ days are holding 10.5 MB of dependencies and build output.",
+        "3 projects untouched for 30+ days are holding 11.5 MB of dependencies and build output.",
         "reclaimable now",
         "regenerable_expensive",
         "── Git worktrees",
@@ -444,7 +469,8 @@ fn table_output_is_sectioned_and_plain_when_piped() {
             .stdout,
     )
     .unwrap();
-    assert!(top.contains("… 1 more (use --top N)"), "{top}");
+    // 3 idle projects in the artifacts section, 1 shown.
+    assert!(top.contains("… 2 more (use --top N)"), "{top}");
 
     let json = fx.run(&["scan", code.to_str().unwrap(), "--json"]);
     assert!(
@@ -494,7 +520,13 @@ fn root_inside_a_repo_and_missing_roots() {
     let report: Value = serde_json::from_slice(&out.stdout).unwrap();
     let arts: Vec<&Value> = findings(&report)
         .iter()
-        .filter(|f| f["category"] == "artifacts")
+        .filter(|f| {
+            f["category"] == "artifacts"
+                && f["details"]["project"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with("/old-web")
+        })
         .collect();
     assert_eq!(arts.len(), 1, "{arts:?}");
     assert_eq!(

@@ -158,7 +158,12 @@ fn tier_style(t: Tier) -> Style {
     }
 }
 
+/// `details.idle_days` when the detector computed it (same clock as the
+/// status), else derived from `last_activity`.
 fn idle_days(f: &Finding, now: SystemTime) -> Option<u64> {
+    if let Some(d) = f.details.get("idle_days").and_then(|v| v.as_i64()) {
+        return Some(d.max(0) as u64);
+    }
     let t = f.last_activity?;
     Some(
         now.duration_since(t)

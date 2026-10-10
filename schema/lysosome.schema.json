@@ -271,7 +271,7 @@
       }
     },
     "artifact_details": {
-      "description": "A git-ignored build/dependency folder inside a project (category artifacts). Status is the project's: REMOVABLE when idle >= dormant_after_days, ACTIVE otherwise, REVIEW when no activity is known. Artifacts inside dormant worktrees are reported only as part of the worktree finding, so totals never double count.",
+      "description": "A git-ignored build/dependency folder inside a project (category artifacts). Status is the project's: REMOVABLE when idle >= dormant_after_days (activity = newest of last commit, git index/HEAD/reflog mtimes and uncommitted-file mtimes), ACTIVE otherwise. REVIEW when no activity is known or `git status` failed, and (with tier review, no cleanup) when the folder contains a .git checkout. Artifacts inside dormant worktrees are reported only as part of the worktree finding, so totals never double count.",
       "type": "object",
       "required": ["project", "project_kind", "idle_days", "relative_path"],
       "properties": {
