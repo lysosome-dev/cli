@@ -56,6 +56,15 @@ pub struct ScanRun {
 }
 
 impl ScanRun {
+    /// True when every root-driven detector ran and failed (e.g. no scan root
+    /// exists). The scan is then meaningless even if the root-independent
+    /// system detectors succeeded.
+    pub fn project_detectors_failed(&self) -> bool {
+        let ids: Vec<&str> = project_detectors().iter().map(|d| d.id()).collect();
+        let mut project = self.runs.iter().filter(|r| ids.contains(&r.id)).peekable();
+        project.peek().is_some() && project.all(|r| r.error.is_some())
+    }
+
     /// True when every detector failed (nothing useful to show).
     pub fn all_failed(&self) -> bool {
         !self.runs.is_empty() && self.runs.iter().all(|r| r.error.is_some())

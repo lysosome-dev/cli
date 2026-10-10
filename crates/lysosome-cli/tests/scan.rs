@@ -33,7 +33,12 @@ fn real_git() -> PathBuf {
         .args(["-c", "command -v git"])
         .output()
         .expect("find git");
-    PathBuf::from(String::from_utf8(out.stdout).unwrap().trim())
+    let path = PathBuf::from(String::from_utf8(out.stdout).unwrap().trim());
+    assert!(
+        out.status.success() && path.is_absolute(),
+        "tests need `git` on PATH"
+    );
+    path
 }
 
 impl Fixture {
@@ -672,6 +677,11 @@ fn scan_includes_system_detectors() {
             .unwrap()
             > 0
     );
+
+    let only_projects: Value = serde_json::from_slice(&scan(&["--json", "--no-system"])).unwrap();
+    assert!(findings(&only_projects)
+        .iter()
+        .all(|f| matches!(f["category"].as_str(), Some("artifacts" | "worktrees"))));
 
     let text = String::from_utf8(scan(&[])).unwrap();
     for title in ["AI models", "Containers", "Package caches"] {

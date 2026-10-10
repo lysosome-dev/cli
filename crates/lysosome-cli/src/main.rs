@@ -47,15 +47,20 @@ Sections:
   Project build & dependency output  git-ignored node_modules, target, .venv,
                                      dist, .next, Pods... in every repository
   Git worktrees                      same as `lysosome worktrees`
+  AI models, Xcode, Package caches,  machine-wide data, same as `lysosome caches`;
+  Containers, Android, Editor caches not limited by ROOTS (skip with --no-system)
 
 Artifact folders are REMOVABLE when their project (last commit, checkout or
 staging, whichever is newest) has been idle --days or more, ACTIVE otherwise.
 Only folders `git check-ignore` confirms are counted; tracked files never are.
 Tiers: dependencies (node_modules, .venv, venv, Pods) are regenerable_expensive
-(re-download); build output is regenerable.
+(re-download); build output is regenerable. Machine-wide items ignore --days:
+caches and models are REMOVABLE by tier (review items are REVIEW) however
+recently they were used; LAST USED / IDLE tells you how recently.
 
 Examples:
-  lysosome scan ~/code                    Scan one folder
+  lysosome scan ~/code                    Scan one folder (plus machine-wide data)
+  lysosome scan ~/code --no-system        Only projects and worktrees under ~/code
   lysosome scan --days 180 --top 50       Long-idle projects, more rows
   lysosome scan --all                     Also list active items
   lysosome scan --json > scan.json        Versioned JSON (schema/lysosome.schema.json)
@@ -125,9 +130,9 @@ pub struct GlobalArgs {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Find idle project artifacts (node_modules, target, .venv...) and dormant worktrees
+    /// Find idle project artifacts, dormant worktrees, caches, AI models, Docker and Xcode data
     #[command(after_help = SCAN_HELP)]
-    Scan(ScanArgs),
+    Scan(ScanCmdArgs),
 
     /// Find dormant git worktrees and the disk they're holding
     #[command(after_help = WORKTREE_HELP)]
@@ -144,6 +149,17 @@ enum Command {
 
 /// `lysosome worktrees` takes the same options as `lysosome scan`.
 pub type WorktreesArgs = ScanArgs;
+
+/// `lysosome scan` = the shared arguments plus scan-only switches.
+#[derive(Debug, Clone, Args)]
+pub struct ScanCmdArgs {
+    #[command(flatten)]
+    pub common: ScanArgs,
+
+    /// Skip machine-wide caches, AI models, Docker, Xcode, Android and editor data
+    #[arg(long)]
+    pub no_system: bool,
+}
 
 /// Options shared by `scan` and `worktrees`.
 #[derive(Debug, Clone, Args)]

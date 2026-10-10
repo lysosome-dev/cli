@@ -56,7 +56,7 @@ lysosome completions fish > ~/.config/fish/completions/lysosome.fish            
 
 ```bash
 lysosome scan                            # artifacts, worktrees, caches, models, Docker, Xcode
-lysosome scan ~/code ~/.worktrees        # scan specific folders (faster)
+lysosome scan ~/code ~/.worktrees        # specific folders (plus machine-wide caches; --no-system skips them)
 lysosome scan --days 180                 # only call projects idle 180+ days dormant
 lysosome scan --all                      # also list active items
 lysosome scan --json | jq .summary       # machine-readable output

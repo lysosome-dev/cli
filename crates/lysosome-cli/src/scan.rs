@@ -24,9 +24,10 @@ use crate::ui::{
     self, human_bytes, pad_left, pad_right, plural, thousands, Painter, PathShortener,
 };
 use crate::worktrees::{self, View};
-use crate::{GlobalArgs, ScanArgs};
+use crate::{GlobalArgs, ScanArgs, ScanCmdArgs};
 
-pub fn run(args: &ScanArgs, global: &GlobalArgs) -> Result<String> {
+pub fn run(cmd: &ScanCmdArgs, global: &GlobalArgs) -> Result<String> {
+    let args = &cmd.common;
     let home = dirs::home_dir();
     let shortener = PathShortener::new(home.clone());
     let roots = worktrees::resolve_roots(&args.roots, home.as_deref())?;
@@ -49,23 +50,26 @@ pub fn run(args: &ScanArgs, global: &GlobalArgs) -> Result<String> {
     } else {
         ctx.progress = &NoProgress;
     }
-    let detectors = detectors::all_detectors();
+    // System detectors read fixed locations under the home folder; without a
+    // home they would look relative to the current directory.
+    let system = !cmd.no_system && home.is_some();
+    if !cmd.no_system && home.is_none() {
+        eprintln!(
+            "{} home folder unknown; skipping caches, AI models, Docker and Xcode",
+            warn.paint("warning:", Style::new().yellow().bold())
+        );
+    }
+    let detectors = if system {
+        detectors::all_detectors()
+    } else {
+        detectors::project_detectors()
+    };
     let mut run = detectors::run(&detectors, &ctx);
     if let Some(s) = &spinner {
         s.clear();
     }
 
-    // The roots drive the project detectors; if all of those failed (e.g. no
-    // root exists) the scan is meaningless even though the system detectors,
-    // which ignore roots, succeeded.
-    let is_project = |c: Category| matches!(c, Category::Worktrees | Category::Artifacts);
-    let projects_failed = run
-        .runs
-        .iter()
-        .filter(|r| is_project(r.category))
-        .all(|r| r.error.is_some())
-        && run.runs.iter().any(|r| is_project(r.category));
-    if run.all_failed() || projects_failed {
+    if run.all_failed() || run.project_detectors_failed() {
         let err = run.runs.iter_mut().find_map(|r| r.error.take());
         return Err(err
             .map(anyhow::Error::from)
