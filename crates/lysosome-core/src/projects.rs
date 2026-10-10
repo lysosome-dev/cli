@@ -20,8 +20,9 @@
 //!   linked worktree, submodule...). Folders whose innermost repository is a
 //!   linked worktree are never re-reported from the walk: they come from the
 //!   worktree pipeline instead.
-//! * Artifacts inside a **dormant** worktree are only part of that worktree's
-//!   finding (`size_bytes`, `details.artifacts`). Artifacts inside an
+//! * Artifacts inside a **dormant** worktree (including those of a repository
+//!   nested in it) are only part of that worktree's finding (`size_bytes`,
+//!   `details.artifacts`). Artifacts inside an
 //!   **active** worktree are emitted as `ACTIVE` artifact findings, which never
 //!   count towards summary totals.
 //! * An artifact folder nested inside another ignored artifact folder is
@@ -230,6 +231,11 @@ pub fn scan(opts: &ScanOptions, progress: &dyn Progress) -> Result<ProjectScan> 
         progress.finish(Phase::Artifacts);
         (wt_scan, art)
     });
+
+    // A repo nested inside a dormant worktree (e.g. a vendored clone) is
+    // already counted in that worktree's size: don't report it again.
+    let dormant_wts: Vec<&Path> = wt_scan.dormant().map(|w| w.path.as_path()).collect();
+    projects.retain(|p| !dormant_wts.iter().any(|w| p.path.starts_with(w)));
 
     // Active worktrees: their (already ignore-checked) artifacts, always ACTIVE.
     for w in wt_scan

@@ -23,6 +23,8 @@
 #   code/mono             repo idle since 2020 (remote: remote.git), no artifacts itself
 #   code/mono-old-wt      dormant merged worktree of mono with ignored node_modules (4 MiB):
 #                         only part of the REMOVABLE worktree finding, never an artifact finding
+#   code/mono-old-wt/vendor/lib   idle repo nested in the dormant worktree, ignored dist/ (1 MiB):
+#                         counted in the worktree's size only, never an artifact finding
 #   code/mono-active-wt   active worktree of mono with ignored node_modules (1 MiB):
 #                         ACTIVE artifact finding (project_kind "worktree")
 #   code/loose/node_modules   not inside any repo: never counted
@@ -117,7 +119,7 @@ mib "$P/.venv/lib" site.bin 2
 q git init --bare "$DEST/remote.git"
 M="$CODE/mono"
 q git init "$M"
-printf 'node_modules/\n' > "$M/.gitignore"
+printf 'node_modules/\nvendor/\n' > "$M/.gitignore"
 printf '# mono\n' > "$M/README.md"
 git -C "$M" add .gitignore README.md
 old_commit "$M" "initial"
@@ -126,6 +128,12 @@ q git -C "$M" push -u origin main
 q git -C "$M" remote set-head origin main
 q git -C "$M" worktree add -b old-wt "$CODE/mono-old-wt"
 mib "$CODE/mono-old-wt/node_modules/dep" dep.bin 4
+L="$CODE/mono-old-wt/vendor/lib"
+q git init "$L"
+printf 'dist/\n' > "$L/.gitignore"
+git -C "$L" add .gitignore
+old_commit "$L" "vendored"
+mib "$L/dist" lib.bin 1
 q git -C "$M" worktree add -b active-wt "$CODE/mono-active-wt"
 mib "$CODE/mono-active-wt/node_modules/dep" dep.bin 1
 
@@ -137,5 +145,6 @@ backdate_gitdir "$W/.git"
 backdate_gitdir "$R/.git"
 backdate_gitdir "$M/.git"
 backdate_gitdir "$M/.git/worktrees/mono-old-wt"
+backdate_gitdir "$L/.git"
 
 echo "$DEST"
