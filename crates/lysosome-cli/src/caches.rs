@@ -124,7 +124,7 @@ pub fn run(args: &CachesArgs, global: &GlobalArgs) -> Result<String> {
 fn render_profile(out: &RunOutput, total: Duration, p: &Painter) -> String {
     let mut s = String::new();
     let mut t = out.timings.clone();
-    t.sort_by(|a, b| b.1.cmp(&a.1));
+    t.sort_by_key(|a| std::cmp::Reverse(a.1));
     writeln!(
         s,
         "  {}",
