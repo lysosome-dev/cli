@@ -315,6 +315,11 @@ fn category_filter_and_table() {
     assert!(!bad.status.success());
 }
 
+/// Lowercase hex of a digest (sha2 0.11 digests no longer implement `LowerHex`).
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 fn snapshot(root: &Path) -> BTreeMap<PathBuf, (SystemTime, String)> {
     let mut out = BTreeMap::new();
     let mut stack = vec![root.to_path_buf()];
@@ -327,7 +332,7 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, (SystemTime, String)> {
                 out.insert(p.clone(), (mtime, "dir".into()));
                 stack.push(p);
             } else if m.is_file() {
-                let hash = format!("{:x}", Sha256::digest(fs::read(&p).unwrap()));
+                let hash = hex(&Sha256::digest(fs::read(&p).unwrap()));
                 out.insert(p, (mtime, hash));
             } else {
                 let target = fs::read_link(&p).unwrap();
