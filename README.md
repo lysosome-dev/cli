@@ -204,6 +204,7 @@ Tiers: **cache** (`regenerable`) is refilled on demand; **costly** (`regenerable
 
 ```bash
 lysosome clean                                   # dry run: what would be cleaned, and the total
+lysosome clean -i                                # pick items in a checklist, then confirm
 lysosome clean --yes                             # do it (cheap-to-rebuild items only)
 lysosome clean ~/code --worktrees --yes          # just dormant, removable worktrees
 lysosome clean --artifacts --tier regenerable_expensive   # include node_modules, .venv, Pods...
@@ -247,6 +248,7 @@ lysosome clean --json                            # the plan as JSON (schema/clea
 
 **Safety guarantees.**
 
+- **Pick interactively.** `clean -i` (`--interactive`) lists the plan as a checklist grouped by category, with size, tier and path. Cheap items start ticked; costly ones (dependencies, AI models, images) are listed unticked so you can opt in (or start ticked with `--tier regenerable_expensive`); `REVIEW` items appear greyed out with the reason they are kept and can't be ticked. `space` toggles, `a` ticks all or none, `enter` continues, `q` cancels. You then see the final plan and confirm with `y`; the chosen items go through the same re-checks as always. `-i` needs a terminal and can't be combined with `--json`.
 - **Dry run by default.** Nothing changes without `--yes`. On a terminal, `clean` shows the plan and asks `Proceed? [y/N]` (default no); piped or with `--json`, it's a dry run unless `--yes` is given.
 - **Re-checked right before acting.** The scan may be minutes old. Each worktree is analyzed again (dirty, untracked files, locked, unpushed, merged, idle) and must still be `REMOVABLE`; each artifact folder must still exist, not be a symlink, still be ignored by `git check-ignore`, hold no `.git`, and its project must still be idle; each Trash path must still exist, not be a symlink and sit in the same folder. An artifact that now sits inside a nested repository is skipped, and a worktree is kept if anything inside it is a nested checkout (a submodule, a clone in an ignored folder), can't be read, or is another mounted filesystem. Anything that changed is skipped with the reason (`2 skipped: changed since scan`).
 - **Fail closed.** A folder about to go is walked first: anything holding a `.git` (folder or file), a folder that can't be read, or another filesystem mounted inside is skipped. Folders with files tracked by git are skipped too.

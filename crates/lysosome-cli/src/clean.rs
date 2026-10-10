@@ -25,6 +25,7 @@ use lysosome_core::system;
 use owo_colors::Style;
 use serde_json::{json, Value};
 
+use crate::pick;
 use crate::progress::Spinner;
 use crate::ui::{self, human_bytes, pad_left, pad_right, plural, Painter, PathShortener};
 use crate::worktrees;
@@ -75,6 +76,10 @@ pub struct CleanArgs {
     /// Only items whose id, kind, name or path matches (exact or glob, repeatable)
     #[arg(long, value_name = "ID|GLOB")]
     pub only: Vec<String>,
+
+    /// Pick items in a terminal checklist, then confirm (needs a terminal)
+    #[arg(long, short = 'i', conflicts_with = "json")]
+    pub interactive: bool,
 
     /// Do it. Without --yes nothing is changed
     #[arg(long, short = 'y')]
@@ -139,6 +144,12 @@ fn selection(args: &CleanArgs) -> Selection {
 pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
     if args.permanent && !args.yes {
         bail!("--permanent deletes for good, so it needs --yes as well (it is never the default)");
+    }
+    if args.interactive && !(std::io::stdin().is_terminal() && ui::stderr_is_tty()) {
+        bail!(
+            "--interactive needs a terminal (stdin and stderr must be a TTY); \
+             run `lysosome clean` without -i for a dry run, then pick items with --only"
+        );
     }
     let home = dirs::home_dir().ok_or(lysosome_core::Error::NoHomeDir)?;
     let shortener = PathShortener::new(Some(home.clone()));
@@ -214,30 +225,83 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
     }
 
     // --- plan ---------------------------------------------------------------
-    let plan = clean::plan(
+    // Interactive mode lists costly items too (unticked), so they can be
+    // opted into without re-running with --tier.
+    let widened;
+    let plan_sel = if args.interactive {
+        let mut s = sel.clone();
+        s.tiers.insert(Tier::RegenerableExpensive);
+        widened = s;
+        &widened
+    } else {
+        &sel
+    };
+    let mut plan = clean::plan(
         &scan.report.findings,
-        &sel,
+        plan_sel,
         PlanOptions {
             permanent: args.permanent,
             now: Some(ctx.now),
+            // Resolved after picking (Plan::subset).
+            keep_nested: args.interactive,
         },
     );
     let p = Painter::new(ui::color_enabled(global.no_color, ui::stdout_is_tty()));
+    let nothing_changed = |lead: &str| CleanOutput {
+        text: format!(
+            "\n  {}{}\n",
+            if lead.is_empty() {
+                String::new()
+            } else {
+                format!("{} ", p.bold(lead))
+            },
+            p.dim("Nothing was changed.")
+        ),
+        failed: false,
+    };
 
-    let interactive = !args.yes
-        && !args.json
-        && !plan.items.is_empty()
-        && std::io::stdin().is_terminal()
-        && ui::stderr_is_tty();
-    let mut execute = args.yes && !plan.items.is_empty();
-    if interactive {
-        print_now(&render_plan(&plan, args, &sel, &p, &shortener, true));
-        execute = confirm(&warn)?;
-        if !execute {
+    if args.interactive {
+        let held = clean::held_for_review(&scan.report.findings, &sel, ctx.now);
+        if plan.items.is_empty() {
+            // Nothing to pick: say so, and show why REVIEW items are kept.
+            let mut text = render_plan(&plan, args, &sel, &p, &shortener, false);
+            text.push_str(&pick::held_lines(&held, &p, &shortener));
             return Ok(CleanOutput {
-                text: format!("\n  {}\n", p.dim("Nothing was changed.")),
+                text,
                 failed: false,
             });
+        }
+        let picker = pick::Picker::new(&plan, &held, &shortener, &sel);
+        let Some(picked) = pick::run(picker, &warn).context("the interactive picker failed")?
+        else {
+            return Ok(nothing_changed(""));
+        };
+        plan = plan.subset(&picked, &sel.tiers);
+        if plan.items.is_empty() {
+            return Ok(nothing_changed("Nothing selected."));
+        }
+    }
+
+    // Ask before acting: always after picking with -i, otherwise on a
+    // terminal without --yes.
+    let prompting = !plan.items.is_empty()
+        && (args.interactive
+            || (!args.yes && !args.json && std::io::stdin().is_terminal() && ui::stderr_is_tty()));
+    let mut execute = args.yes && !plan.items.is_empty();
+    if prompting {
+        // The plan must be seen before the question: if stdout is redirected,
+        // show it on stderr (the terminal the question is asked on).
+        if ui::stdout_is_tty() {
+            print_now(&render_plan(&plan, args, &sel, &p, &shortener, true));
+        } else {
+            eprint!(
+                "{}",
+                render_plan(&plan, args, &sel, &warn, &shortener, true)
+            );
+        }
+        execute = confirm(&warn)?;
+        if !execute {
+            return Ok(nothing_changed(""));
         }
     }
 
@@ -283,9 +347,9 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
         ex.command_timeout = std::time::Duration::from_secs(secs);
     }
 
-    if !args.json && !interactive {
+    if !args.json && !prompting {
         print_now(&render_header(&plan, &p, true));
-    } else if interactive {
+    } else if prompting {
         print_now("\n");
     }
     // Ctrl-C: finish (and log) the current item, then stop. A second Ctrl-C
@@ -370,7 +434,7 @@ fn confirm(p: &Painter) -> Result<bool> {
     ))
 }
 
-fn tier_badge(t: Tier, p: &Painter) -> String {
+pub(crate) fn tier_badge(t: Tier, p: &Painter) -> String {
     let (label, style) = match t {
         Tier::Regenerable => ("cheap", Style::new().green()),
         Tier::RegenerableExpensive => ("costly", Style::new().cyan()),
@@ -388,7 +452,7 @@ fn action_label(i: &PlanItem) -> &'static str {
     }
 }
 
-fn size_cell(i: &PlanItem) -> String {
+pub(crate) fn size_cell(i: &PlanItem) -> String {
     if i.size_is_upper_bound {
         format!("≤{}", human_bytes(i.size_bytes))
     } else {
@@ -415,7 +479,7 @@ fn argv_display(argv: &[String], paths: &PathShortener) -> String {
 }
 
 /// What the TARGET column shows.
-fn target_of(i: &PlanItem, paths: &PathShortener) -> String {
+pub(crate) fn target_of(i: &PlanItem, paths: &PathShortener) -> String {
     match i.action {
         ActionKind::Command => argv_display(&i.command, paths),
         ActionKind::WorktreeRemove => paths.short(&i.path),
@@ -646,6 +710,13 @@ fn held_back(o: &mut String, plan: &Plan, args: &CleanArgs, sel: &Selection, p: 
         bits.push(format!(
             "{} newer than --older-than or of unknown age",
             plural(ex.older_than.items, "item", "items")
+        ));
+    }
+    if !ex.deselected.is_zero() {
+        bits.push(format!(
+            "{} ({}) not selected",
+            plural(ex.deselected.items, "item", "items"),
+            human_bytes(ex.deselected.bytes)
         ));
     }
     if ex.only.items > 0 && !sel.only.is_empty() {

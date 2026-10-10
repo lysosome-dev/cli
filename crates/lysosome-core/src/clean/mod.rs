@@ -98,6 +98,11 @@ pub struct PlanOptions {
     pub permanent: bool,
     /// "Now" for age filters.
     pub now: Option<SystemTime>,
+    /// Keep items nested inside another item's target (normally dropped so
+    /// each byte is acted on once). For pickers: the nesting is resolved by
+    /// [`Plan::subset`] after the user chose, so unticking a big item never
+    /// hides a smaller one inside it.
+    pub keep_nested: bool,
 }
 
 /// What will be done to an item.
@@ -186,6 +191,10 @@ pub struct Count {
 }
 
 impl Count {
+    pub fn is_zero(&self) -> bool {
+        self.items == 0
+    }
+
     fn add(&mut self, bytes: u64) {
         self.items += 1;
         self.bytes += bytes;
@@ -208,6 +217,10 @@ pub struct Excluded {
     /// Dormant worktrees with no artifact folders to strip, or findings
     /// without any cleanup.
     pub nothing_to_do: Count,
+    /// Planned, then left unticked in `clean --interactive`
+    /// ([`Plan::subset`]). Omitted from JSON when zero.
+    #[serde(skip_serializing_if = "Count::is_zero")]
+    pub deselected: Count,
 }
 
 /// The output of [`plan`].
@@ -283,8 +296,11 @@ pub fn plan(findings: &[Finding], sel: &Selection, opts: PlanOptions) -> Plan {
         }
     }
 
-    let items = drop_nested(items);
-    let mut items = items;
+    let mut items = if opts.keep_nested {
+        items
+    } else {
+        drop_nested(items)
+    };
     items.sort_by(|a, b| {
         cat_rank(a.category)
             .cmp(&cat_rank(b.category))
@@ -297,6 +313,86 @@ pub fn plan(findings: &[Finding], sel: &Selection, opts: PlanOptions) -> Plan {
         permanent: opts.permanent,
         excluded: ex,
     }
+}
+
+impl Plan {
+    /// The plan narrowed to the items at `picked` (indices into
+    /// [`Plan::items`], e.g. what a user ticked in `clean --interactive`).
+    /// Order, guards and `permanent` are kept and nothing is added, so a
+    /// selection can only ever narrow a plan; out-of-range indices are
+    /// ignored. Picked items nested inside another picked item are dropped
+    /// (each byte is acted on once; see [`PlanOptions::keep_nested`]).
+    ///
+    /// Items left out (and not inside a picked item, which takes them along)
+    /// are counted as [`Excluded::tier`] when their tier is not in
+    /// `default_tiers` (what the user's `--tier` covers, so the "costly to
+    /// get back" hint survives), else as [`Excluded::deselected`].
+    /// Execution still re-checks every item.
+    pub fn subset(&self, picked: &BTreeSet<usize>, default_tiers: &BTreeSet<Tier>) -> Plan {
+        let mut excluded = self.excluded;
+        let mut items = Vec::new();
+        let picked_targets: Vec<&PathBuf> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(n, _)| picked.contains(n))
+            .flat_map(|(_, i)| targets(i))
+            .collect();
+        for (n, i) in self.items.iter().enumerate() {
+            if picked.contains(&n) {
+                items.push(i.clone());
+                continue;
+            }
+            let swallowed = targets(i)
+                .iter()
+                .any(|t| picked_targets.iter().any(|p| t != p && t.starts_with(p)));
+            if swallowed {
+                continue;
+            }
+            if default_tiers.contains(&i.tier) {
+                excluded.deselected.add(i.size_bytes);
+            } else {
+                excluded.tier.add(i.size_bytes);
+            }
+        }
+        let items = drop_nested(items);
+        Plan {
+            total_bytes: items.iter().map(|i| i.size_bytes).sum(),
+            items,
+            permanent: self.permanent,
+            excluded,
+        }
+    }
+}
+
+/// Dormant findings in the selected scopes that are never cleaned because
+/// they need a human: status `REVIEW`, or tier `review`, narrowed by
+/// `--older-than` and `--only` like planned items. Sorted like a plan
+/// (category, then size, largest first). `clean --interactive` lists them,
+/// unselectable, with their reason. With [`Selection::strip_artifacts`],
+/// worktrees are left out: their artifact folders are planned instead.
+pub fn held_for_review<'a>(
+    findings: &'a [Finding],
+    sel: &Selection,
+    now: SystemTime,
+) -> Vec<&'a Finding> {
+    let mut out: Vec<&Finding> = findings
+        .iter()
+        .filter(|f| sel.scopes.contains(&Scope::of(f.category)))
+        .filter(|f| !(sel.strip_artifacts && f.category == Category::Worktrees))
+        .filter(|f| {
+            f.status == Status::Review || (f.status == Status::Removable && f.tier == Tier::Review)
+        })
+        .filter(|f| old_enough(f, sel.older_than_days, now))
+        .filter(|f| matches_only(&sel.only, &candidates_of(f)))
+        .collect();
+    out.sort_by(|a, b| {
+        cat_rank(a.category)
+            .cmp(&cat_rank(b.category))
+            .then(b.size_bytes.cmp(&a.size_bytes))
+            .then(a.id.cmp(&b.id))
+    });
+    out
 }
 
 fn cat_rank(c: Category) -> usize {
@@ -525,7 +621,8 @@ fn drop_nested(items: Vec<PlanItem>) -> Vec<PlanItem> {
         .collect()
 }
 
-fn targets(i: &PlanItem) -> Vec<&PathBuf> {
+/// Paths an item acts on (none for tool commands).
+pub fn targets(i: &PlanItem) -> Vec<&PathBuf> {
     match i.action {
         ActionKind::WorktreeRemove => vec![&i.path],
         ActionKind::Trash | ActionKind::Delete => i.paths.iter().collect(),

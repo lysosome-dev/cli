@@ -239,7 +239,7 @@ fn strip_artifacts_keeps_worktrees_and_includes_review_ones() {
         &sel,
         PlanOptions {
             permanent: true,
-            now: None,
+            ..PlanOptions::default()
         },
     );
     let paths: Vec<&Path> = p.items.iter().map(|i| i.path.as_path()).collect();
@@ -592,4 +592,158 @@ fn docker_pseudo_paths_are_commands_and_never_trash_targets() {
             .unwrap()
             .size_is_upper_bound
     );
+}
+
+#[test]
+fn nested_items_survive_until_the_pick_when_asked() {
+    let outer = cache_trash(Path::new("/h/.cache/big"), 100);
+    let inner = cache_trash(Path::new("/h/.cache/big/small"), 10);
+    let findings = vec![outer, inner];
+    let sel = Selection::default();
+    let opts = PlanOptions {
+        keep_nested: true,
+        ..PlanOptions::default()
+    };
+    assert_eq!(plan(&findings, &sel, PlanOptions::default()).items.len(), 1);
+    let p = plan(&findings, &sel, opts);
+    assert_eq!(p.items.len(), 2);
+    let big = p
+        .items
+        .iter()
+        .position(|i| i.path.ends_with("big"))
+        .unwrap();
+    let small = 1 - big;
+    // Both picked: the nested one is dropped (acted on once).
+    let both = p.subset(&[0, 1].into_iter().collect(), &sel.tiers);
+    assert_eq!(both.items.len(), 1);
+    assert!(both.items[0].path.ends_with("big"));
+    assert!(
+        both.excluded.deselected.is_zero(),
+        "swallowed, not left out"
+    );
+    // Only the small one: it stays.
+    let s = p.subset(&[small].into_iter().collect(), &sel.tiers);
+    assert_eq!(s.items.len(), 1);
+    assert!(s.items[0].path.ends_with("small"));
+    assert_eq!(
+        s.excluded.deselected,
+        Count {
+            items: 1,
+            bytes: 100
+        }
+    );
+    // Left out and outside --tier: counted as a tier exclusion (keeps the hint).
+    let s = p.subset(&BTreeSet::new(), &BTreeSet::new());
+    assert_eq!(s.excluded.tier.items, p.excluded.tier.items + 2);
+    let _ = big;
+}
+
+#[test]
+fn subset_only_narrows_and_keeps_order_and_totals() {
+    let findings = vec![
+        cache_cmd("npm", Tier::Regenerable, 300),
+        cache_cmd("brew", Tier::Regenerable, 200),
+        cache_cmd("pip", Tier::Regenerable, 100),
+    ];
+    let p = plan(&findings, &Selection::default(), PlanOptions::default());
+    assert_eq!(p.items.len(), 3);
+    let ids = |p: &Plan| p.items.iter().map(|i| i.kind.clone()).collect::<Vec<_>>();
+    assert_eq!(ids(&p), ["npm", "brew", "pip"]);
+
+    let s = p.subset(
+        &[2, 0, 99].into_iter().collect(),
+        &Selection::default().tiers,
+    );
+    assert_eq!(ids(&s), ["npm", "pip"], "plan order, unknown index ignored");
+    assert_eq!(s.total_bytes, 400);
+    assert_eq!(
+        s.excluded.deselected,
+        Count {
+            items: 1,
+            bytes: 200
+        }
+    );
+    assert_eq!(s.excluded.tier, p.excluded.tier);
+    assert_eq!(s.permanent, p.permanent);
+    // Guards travel with the items (execution re-checks them).
+    assert_eq!(s.items[1].guard, p.items[2].guard);
+
+    let none = p.subset(&BTreeSet::new(), &Selection::default().tiers);
+    assert!(none.items.is_empty());
+    assert_eq!(none.total_bytes, 0);
+}
+
+#[test]
+fn held_for_review_lists_review_items_in_scope() {
+    let findings = vec![
+        worktree(
+            "/c/wt-review",
+            Status::Review,
+            &[("/c/wt-review/node_modules", 10)],
+        ),
+        worktree("/c/wt-ok", Status::Removable, &[]),
+        worktree("/c/wt-orphan", Status::Orphan, &[]),
+        finding(
+            "archives:/x/Archives",
+            Category::Xcode,
+            Status::Removable,
+            Tier::Review,
+            50,
+        ),
+        finding(
+            "volume:/v",
+            Category::Containers,
+            Status::Review,
+            Tier::Review,
+            70,
+        ),
+        finding(
+            "npm:/n",
+            Category::PackageCaches,
+            Status::Active,
+            Tier::Review,
+            70,
+        ),
+    ];
+    let ids = |v: Vec<&Finding>| v.iter().map(|f| f.id.clone()).collect::<Vec<_>>();
+    assert_eq!(
+        ids(held_for_review(
+            &findings,
+            &Selection::default(),
+            SystemTime::now()
+        )),
+        ["worktree:/c/wt-review", "archives:/x/Archives", "volume:/v"]
+    );
+    let only_wt = Selection {
+        scopes: [Scope::Worktrees].into_iter().collect(),
+        ..Selection::default()
+    };
+    assert_eq!(
+        ids(held_for_review(&findings, &only_wt, SystemTime::now())),
+        ["worktree:/c/wt-review"]
+    );
+    // --only and --older-than narrow them like planned items.
+    let only_vol = Selection {
+        only: vec!["volume*".into()],
+        ..Selection::default()
+    };
+    assert_eq!(
+        ids(held_for_review(&findings, &only_vol, SystemTime::now())),
+        ["volume:/v"]
+    );
+    let old = Selection {
+        older_than_days: Some(90),
+        ..Selection::default()
+    };
+    assert_eq!(
+        ids(held_for_review(&findings, &old, SystemTime::now())),
+        ["worktree:/c/wt-review"],
+        "only the worktree has a known age (100 days)"
+    );
+    // Stripping artifacts plans the REVIEW worktree's folders instead.
+    let strip = Selection {
+        strip_artifacts: true,
+        ..only_wt
+    };
+    assert!(held_for_review(&findings, &strip, SystemTime::now()).is_empty());
 }

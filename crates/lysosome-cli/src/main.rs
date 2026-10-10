@@ -3,6 +3,7 @@
 mod caches;
 mod clean;
 mod completions;
+mod pick;
 mod progress;
 mod scan;
 mod ui;
@@ -43,6 +44,7 @@ Examples:
   lysosome worktrees                       Only dormant git worktrees
   lysosome caches                          Package caches, AI models, Docker, Xcode
   lysosome clean                           What a cleanup would do (dry run)
+  lysosome clean -i                        Pick what to clean, then confirm
   lysosome clean --yes                     Clean REMOVABLE, cheap-to-rebuild items
   lysosome scan --days 90                  Call anything idle 90+ days dormant
   lysosome scan --json | jq .summary       Machine-readable output";
@@ -108,8 +110,16 @@ Files go to the Trash unless --permanent (which needs --yes). Every action
 is appended to an action log (~/Library/Logs/lysosome/actions.log on macOS,
 $XDG_STATE_HOME/lysosome/actions.log elsewhere).
 
+Interactive (-i): pick items in a checklist grouped by category. Cheap items
+start ticked, costly ones (dependencies, models, images) unticked unless you
+pass --tier regenerable_expensive; REVIEW
+items are listed greyed out with the reason they are kept. Keys: ↑/↓ move,
+space toggle, a all/none, enter continue, q cancel. You then see the final
+plan and confirm with y before anything happens.
+
 Examples:
   lysosome clean                              Show what would be cleaned
+  lysosome clean -i ~/code                    Choose items, then confirm
   lysosome clean ~/code --worktrees --yes     Remove removable worktrees
   lysosome clean --strip-artifacts --tier regenerable_expensive ~/.worktrees
                                               Free node_modules etc. inside

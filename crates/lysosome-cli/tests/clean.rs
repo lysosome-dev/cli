@@ -791,3 +791,202 @@ fn help_documents_the_safety_defaults() {
         assert!(h.contains(needle), "help is missing {needle}:\n{h}");
     }
 }
+
+/// Drive `lysosome <args>` on a pseudo-terminal (Python's `pty`, already a
+/// test dependency for the prototype parity test). `steps` are
+/// `(wait_for_text, keys_to_send)`; returns everything the terminal showed.
+/// `None` when python3 isn't available.
+fn run_in_pty(fx: &Fixture, args: &[&str], steps: &[(&str, &str)]) -> Option<(i32, String)> {
+    const DRIVER: &str = r#"
+import fcntl, json, os, pty, select, struct, sys, termios, time
+steps = json.loads(sys.argv[1]); argv = sys.argv[2:]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(argv[0], argv)
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 140, 0, 0))
+buf = b""
+def pump(deadline):
+    global buf
+    r, _, _ = select.select([fd], [], [], max(0, min(0.2, deadline - time.time())))
+    if r:
+        try:
+            chunk = os.read(fd, 65536)
+        except OSError:
+            return False
+        if not chunk:
+            return False
+        buf += chunk
+    return True
+for want, keys in steps:
+    deadline = time.time() + 120
+    while want.encode() not in buf:
+        if time.time() > deadline or not pump(deadline):
+            sys.stdout.write(buf.decode("utf-8", "replace"))
+            sys.stderr.write("timed out waiting for %r\n" % want)
+            sys.exit(97)
+    time.sleep(0.2)
+    if keys:
+        try:
+            os.write(fd, keys.encode())
+        except OSError:
+            pass
+deadline = time.time() + 300
+while time.time() < deadline and pump(deadline):
+    pass
+_, status = os.waitpid(pid, 0)
+sys.stdout.write(buf.decode("utf-8", "replace"))
+sys.exit(os.waitstatus_to_exitcode(status))
+"#;
+    if Command::new("python3").arg("--version").output().is_err() {
+        // Don't let a missing interpreter turn the only end-to-end test of
+        // interactive deletion into a silent pass.
+        assert!(
+            std::env::var_os("LYSOSOME_SKIP_PTY_TESTS").is_some(),
+            "python3 is needed for the pty tests (set LYSOSOME_SKIP_PTY_TESTS=1 to skip them)"
+        );
+        return None;
+    }
+    let bin = assert_cmd::cargo::cargo_bin("lysosome");
+    let steps_json = serde_json::to_string(
+        &steps
+            .iter()
+            .map(|(w, k)| vec![w.to_string(), k.to_string()])
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    let base = fx.cmd();
+    let mut cmd = Command::new("python3");
+    cmd.arg("-c")
+        .arg(DRIVER)
+        .arg(steps_json)
+        .arg(bin)
+        .args(args);
+    for (k, v) in base.get_envs() {
+        match v {
+            Some(v) => cmd.env(k, v),
+            None => cmd.env_remove(k),
+        };
+    }
+    cmd.env("TERM", "xterm-256color").current_dir(&fx.dest);
+    let out = cmd.output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_ne!(
+        out.status.code(),
+        Some(97),
+        "pty driver timed out:\n{text}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Some((out.status.code().unwrap_or(-1), text))
+}
+
+#[test]
+fn interactive_clean_acts_only_on_picked_items_after_confirmation() {
+    let fx = Fixture::new("make_worktrees.sh");
+    let code = fx.s("code");
+    let args = ["clean", code.as_str(), "--worktrees", "-i"];
+    // Cancelling the picker changes nothing.
+    let before = snapshot(&fx.dest);
+    let Some((status, text)) = run_in_pty(&fx, &args, &[("Choose what to clean", "q")]) else {
+        eprintln!("python3 not available; skipping the pty test");
+        return;
+    };
+    assert_eq!(status, 0, "{text}");
+    assert!(text.contains("Nothing was changed."), "{text}");
+    // REVIEW worktrees are listed, greyed out, with their reason.
+    assert!(text.contains("1 unpushed commit, not merged"), "{text}");
+    assert!(text.contains("[-] review"), "{text}");
+    assert!(diff(&before, &snapshot(&fx.dest)).is_empty());
+
+    // Saying no at the final prompt changes nothing either.
+    let (status, text) = run_in_pty(
+        &fx,
+        &args,
+        &[("Choose what to clean", "\r"), ("Proceed? [y/N]", "n\r")],
+    )
+    .unwrap();
+    assert_eq!(status, 0, "{text}");
+    assert!(text.contains("Will reclaim"), "{text}");
+    assert!(text.contains("Nothing was changed."), "{text}");
+    assert!(diff(&before, &snapshot(&fx.dest)).is_empty());
+
+    // Untick the first (largest) worktree, app-merged, and confirm.
+    let (status, text) = run_in_pty(
+        &fx,
+        &args,
+        &[("Choose what to clean", " \r"), ("Proceed? [y/N]", "y\r")],
+    )
+    .unwrap();
+    assert_eq!(status, 0, "{text}");
+    assert!(text.contains("Reclaimed"), "{text}");
+    assert!(fx.p("code/app-merged").exists(), "unticked, kept:\n{text}");
+    assert!(
+        !fx.p("code/app-pushed").exists(),
+        "ticked, removed:\n{text}"
+    );
+    for kept in [
+        "code/app-dirty",
+        "code/app-unpushed",
+        "code/app-locked",
+        "code/solo-wt",
+    ] {
+        assert!(fx.p(kept).exists(), "REVIEW {kept} must never be touched");
+    }
+    let removed: Vec<String> = fx
+        .log_lines()
+        .iter()
+        .filter(|l| l["outcome"] == "done")
+        .map(|l| l["target"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert!(
+        removed.iter().any(|p| p.ends_with("app-pushed")),
+        "{removed:?}"
+    );
+    assert!(
+        !removed.iter().any(|p| p.ends_with("app-merged")),
+        "{removed:?}"
+    );
+}
+
+#[test]
+fn interactive_needs_a_terminal_and_rejects_json() {
+    let fx = Fixture::new("make_worktrees.sh");
+    let out = fx.run(&["clean", &fx.s("code"), "-i"]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("--interactive needs a terminal"), "{err}");
+    assert!(err.contains("without -i"), "suggests a fix: {err}");
+    let out = fx.run(&["clean", &fx.s("code"), "-i", "--json"]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("cannot be used with"),
+        "a clap conflict: {err}"
+    );
+}
+
+#[test]
+fn interactive_with_nothing_to_pick_explains_what_is_kept() {
+    let fx = Fixture::new("make_worktrees.sh");
+    let code = fx.s("code");
+    let Some((status, text)) = run_in_pty(
+        &fx,
+        &[
+            "clean",
+            code.as_str(),
+            "--worktrees",
+            "-i",
+            "--only",
+            "*app-dirty",
+        ],
+        &[("Kept for review", "")],
+    ) else {
+        return;
+    };
+    assert_eq!(status, 0, "{text}");
+    assert!(text.contains("Nothing to clean"), "{text}");
+    assert!(
+        text.contains("1 uncommitted change, 1 untracked file"),
+        "{text}"
+    );
+    assert!(!text.contains("Choose what to clean"), "{text}");
+}

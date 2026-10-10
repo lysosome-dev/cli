@@ -9,6 +9,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `lysosome clean -i` / `--interactive` (#16): pick what to clean in a
+  terminal checklist grouped by category (size, tier badge, path). Items of
+  the `--tier` tiers start ticked (cheap ones by default), costly ones are
+  listed unticked, and `REVIEW` items are
+  shown greyed out with their reason. `space` toggles, `a` ticks all/none,
+  `enter` continues to the final plan and a `y/N` confirmation; execution
+  uses the same per-item re-checks. Refuses to run without a terminal.
 - Releases publish `lysosome-core` and `lysosome` to crates.io once the
   maintainers add a token, so `cargo install lysosome` will work.
 - Issue and pull request templates, a code of conduct, Dependabot, and a

@@ -26,6 +26,8 @@ anyhow = "1"
 clap = { version = "4.6", features = ["derive", "wrap_help"] }
 clap_complete = "4.6"
 clap_mangen = "0.3"
+# Raw key reads for `clean --interactive` (already in the tree via indicatif).
+console = { version = "0.16", default-features = false, features = ["std", "ansi-parsing"] }
 dirs = "6"
 indicatif = "0.18"
 libc = "0.2"

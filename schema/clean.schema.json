@@ -167,7 +167,11 @@
         "tier": { "$ref": "#/$defs/count" },
         "older_than": { "$ref": "#/$defs/count" },
         "only": { "$ref": "#/$defs/count" },
-        "nothing_to_do": { "$ref": "#/$defs/count" }
+        "nothing_to_do": { "$ref": "#/$defs/count" },
+        "deselected": {
+          "description": "Planned items left unticked in `clean --interactive` (which never prints JSON today). Optional: omitted when zero.",
+          "$ref": "#/$defs/count"
+        }
       }
     },
     "summary": {
