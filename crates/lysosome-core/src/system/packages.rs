@@ -65,20 +65,21 @@ fn npm(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
         .map(|p| item("npm-cache", p, "npm cache").command(["npm", "cache", "clean", "--force"])))
 }
 
-/// pnpm's store. Asks `pnpm store path` only when `pnpm` is a real install:
-/// corepack's shim would download pnpm first ([`Tools`] refuses to run it),
-/// so then we check pnpm's default store locations instead.
+/// pnpm's store. Asks `pnpm store path`; when `pnpm` is corepack's (or
+/// Volta's) shim, which could download pnpm first, [`Tools`] refuses to run
+/// it and pnpm's default store locations are checked instead.
 fn pnpm(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
     let h = &ctx.home;
     let mut fallbacks = Vec::new();
     if let Some(p) = env.var_path("PNPM_HOME") {
         fallbacks.push(p.join("store"));
     }
-    if cfg!(target_os = "macos") {
-        fallbacks.push(h.join("Library/pnpm/store"));
-    }
+    // pnpm's own order: $PNPM_HOME, $XDG_DATA_HOME, then the OS default.
     if let Some(p) = env.var_path("XDG_DATA_HOME") {
         fallbacks.push(p.join("pnpm/store"));
+    }
+    if cfg!(target_os = "macos") {
+        fallbacks.push(h.join("Library/pnpm/store"));
     }
     fallbacks.push(h.join(".local/share/pnpm/store"));
     fallbacks.push(h.join(".pnpm-store"));

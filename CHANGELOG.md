@@ -13,9 +13,10 @@ All notable changes to this project are documented here. The format follows
 
 - Scanning could write to disk (#13): with corepack's `pnpm` shim on `PATH`,
   asking `pnpm store path` downloaded pnpm into `~/.cache/node/corepack`.
-  Corepack shims are now never run during a scan; the pnpm store and Yarn
-  cache are found at their default locations instead (`$PNPM_HOME/store`,
-  `~/Library/pnpm/store`, `$XDG_DATA_HOME/pnpm/store`; `$YARN_CACHE_FOLDER`,
+  Corepack shims (and Volta's, which can also fetch pinned versions) are now
+  never run during a scan; the pnpm store and Yarn cache are found at their
+  default locations instead (`$PNPM_HOME/store`, `$XDG_DATA_HOME/pnpm/store`,
+  `~/Library/pnpm/store`; `$YARN_CACHE_FOLDER`,
   `~/Library/Caches/Yarn`, `~/.cache/yarn`, `~/.yarn/berry/cache`). Yarn is no
   longer asked at all, since `yarn cache dir` creates a missing cache folder.
 - Every tool a scan asks (`pnpm`, `pip`, `uv`, `go`, `brew`, `docker`,
@@ -23,7 +24,7 @@ All notable changes to this project are documented here. The format follows
   that turn off downloads, self-updates, auto-installs and bytecode writes
   (`COREPACK_ENABLE_NETWORK=0`, `GOTOOLCHAIN=local`,
   `HOMEBREW_NO_AUTO_UPDATE=1`, `PIP_DISABLE_PIP_VERSION_CHECK=1`,
-  `PYTHONDONTWRITEBYTECODE=1`, `MISE_NOT_FOUND_AUTO_INSTALL=false`...), so a
+  `PYTHONDONTWRITEBYTECODE=1`, `MISE_EXEC_AUTO_INSTALL=false`...), so a
   project's `packageManager` field or `go.mod` toolchain line can't make a
   tool fetch itself.
 
