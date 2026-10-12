@@ -1228,3 +1228,45 @@ fn warnings_are_events_in_json_progress_mode() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[test]
+fn findings_events_stream_exactly_the_reports_findings() {
+    let fx = Fixture::new("make_projects.sh");
+    let out = fx.ok(&[
+        "scan",
+        &fx.s("code"),
+        "--no-gh",
+        "--json",
+        "--progress",
+        "json",
+    ]);
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let events = progress_events(&out.stderr);
+    let streamed: Vec<&Value> = events
+        .iter()
+        .filter(|e| e["event"] == "findings")
+        .flat_map(|e| e["findings"].as_array().unwrap())
+        .collect();
+    let report = doc["findings"].as_array().unwrap();
+    assert!(!report.is_empty());
+    let mut a: Vec<&str> = streamed.iter().map(|f| f["id"].as_str().unwrap()).collect();
+    let mut b: Vec<&str> = report.iter().map(|f| f["id"].as_str().unwrap()).collect();
+    a.sort();
+    b.sort();
+    assert_eq!(a, b, "the union of findings events is the report");
+    // Each streamed finding is the report's object, field for field.
+    for f in &streamed {
+        let r = report.iter().find(|r| r["id"] == f["id"]).unwrap();
+        assert_eq!(*f, r);
+    }
+    // Every findings event follows its detector event.
+    for (i, e) in events
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e["event"] == "findings")
+    {
+        assert!(events[..i]
+            .iter()
+            .any(|d| d["event"] == "detector" && d["id"] == e["id"]));
+    }
+}

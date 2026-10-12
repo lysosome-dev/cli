@@ -127,6 +127,17 @@ impl Progress for Reporter {
             j.detector_finished(id, category, findings, error);
         }
     }
+
+    fn detector_findings(
+        &self,
+        id: &'static str,
+        category: Category,
+        findings: &[lysosome_core::model::Finding],
+    ) {
+        if let Reporter::Json(j) = self {
+            j.detector_findings(id, category, findings);
+        }
+    }
 }
 
 pub struct Spinner {
@@ -325,6 +336,18 @@ impl JsonProgress {
                 "findings": findings,
                 "error": error,
             }),
+        );
+    }
+
+    fn detector_findings(
+        &self,
+        id: &'static str,
+        category: Category,
+        findings: &[lysosome_core::model::Finding],
+    ) {
+        self.emit(
+            "findings",
+            json!({ "id": id, "category": category, "findings": findings }),
         );
     }
 }

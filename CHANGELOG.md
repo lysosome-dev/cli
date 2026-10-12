@@ -9,6 +9,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `--progress json` streams each detector's findings (#40): a `findings`
+  event right after its `detector` event, with the finding objects exactly
+  as in the final report. Across all events they are the report's findings,
+  so GUIs can show results while the scan runs. Additive; stdout unchanged.
+
 - `--progress <auto|json|off>` (#38), a global flag. `json` writes
   newline-delimited progress events to stderr (stdout keeps the report) for
   GUIs and scripts: `phase_start` / throttled `advance` / `phase_finish`, a
