@@ -93,6 +93,7 @@ impl ActionLog {
             "outcome": result.outcome,
             "destination": result.destination,
             "message": result.message,
+            "trashed": result.trashed,
         });
         self.write(entry)
     }

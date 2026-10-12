@@ -55,6 +55,17 @@ pub trait Progress: Sync {
     fn advance(&self, _n: u64) {}
     /// The phase finished.
     fn finish(&self, _phase: Phase) {}
+    /// A detector finished. `id` is its stable id (`"ollama"`, `"worktrees"`),
+    /// `findings` how many items it reported, `error` why it failed, if it did.
+    /// Called from the detector's own thread, as soon as it is done.
+    fn detector_finished(
+        &self,
+        _id: &'static str,
+        _category: crate::model::Category,
+        _findings: usize,
+        _error: Option<&str>,
+    ) {
+    }
 }
 
 /// A [`Progress`] that ignores everything.
