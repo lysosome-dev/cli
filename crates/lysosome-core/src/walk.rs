@@ -83,6 +83,13 @@ pub fn set_skip_paths(paths: &[PathBuf]) {
     let _ = SKIP_PATHS.set(paths);
 }
 
+/// Is `path` one of the `skip` folders or inside one? Callers that follow a
+/// pointer out of the walked tree (a worktree's `.git` file, a repo's
+/// worktree list) check this before reading anything there.
+pub fn is_within(path: &Path, skip: &[PathBuf]) -> bool {
+    skip.iter().any(|s| path.starts_with(s))
+}
+
 /// Is `name` `.git` or in [`SKIP_DIRS`] (never descended by default)?
 pub fn is_skipped(name: &OsStr) -> bool {
     name == ".git" || SKIP_DIRS.iter().any(|s| OsStr::new(s) == name)

@@ -22,7 +22,9 @@ All notable changes to this project are documented here. The format follows
   folder out of every walk (`scan`, `worktrees`, `clean`). It is never listed
   or entered, so on macOS a protected folder (Desktop, Documents, Downloads)
   never triggers a privacy prompt. Give `clean` the same `--skip` as the scan
-  that found its items.
+  that found its items. Worktrees reached by pointer are covered too (#48):
+  one whose repository is in a skipped folder, or that lives in one, is left
+  out unread.
 - `--progress json` streams each detector's findings (#40): a `findings`
   event right after its `detector` event, with the finding objects exactly
   as in the final report. Across all events they are the report's findings,
