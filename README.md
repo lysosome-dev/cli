@@ -299,7 +299,7 @@ On Claude Code older than 2.1.275, run `/plugin marketplace add lysosome-dev/cli
   | `strip-merged` | Its git-ignored `node_modules`, `target`, `.venv`… go to the Trash; the worktree stays |
   | `remove-merged` | `git worktree remove` (the branch is kept), when lysosome says it is `REMOVABLE` |
 
-  Nothing happens on `/clear` or `/resume`, which keep the session going in the same folder. Every cleanup is `lysosome clean`, so the [safety rules](#safety-rules) still decide: dirty, untracked, locked or unpushed worktrees are never touched. Cleanups the plugin runs are written to the action log with `"actor": "claude-code"`.
+  Nothing happens on `/clear` or `/resume`, which keep the session going in the same folder. Nothing happens either while any process still works in that folder (your terminal, another session, a dev server); the plugin waits for the session to exit, then checks. Every cleanup is `lysosome clean`, so the [safety rules](#safety-rules) still decide: dirty, untracked, locked or unpushed worktrees are never touched. Cleanups the plugin runs are written to the action log with `"actor": "claude-code"`.
 
 ## JSON output
 

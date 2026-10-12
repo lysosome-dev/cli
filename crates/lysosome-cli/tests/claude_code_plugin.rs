@@ -267,3 +267,24 @@ fn missing_cli_or_bad_input_is_silent() {
         assert!(out.stdout.is_empty() && out.stderr.is_empty());
     }
 }
+
+#[test]
+fn never_tidies_a_worktree_another_process_is_working_in() {
+    if python().is_none() {
+        return;
+    }
+    let fx = Fx::new();
+    // A shell (or dev server) still sitting in the worktree.
+    let mut shell = Command::new("sleep")
+        .arg("30")
+        .current_dir(fx.p("code/app-merged"))
+        .spawn()
+        .unwrap();
+    fx.end("remove-merged", "other", &fx.p("code/app-merged"));
+    let _ = shell.kill();
+    let _ = shell.wait();
+    assert!(fx.p("code/app-merged/node_modules").is_dir(), "left alone");
+    let r = fx.recorded();
+    assert_eq!(r[0]["skipped"], "in use");
+    assert!(r[0]["action"].is_null());
+}

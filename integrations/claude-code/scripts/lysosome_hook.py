@@ -86,6 +86,65 @@ def linked_worktree(cwd):
     return top
 
 
+def session_pid():
+    """The Claude Code process: the hook runs as claude -> sh -> python3."""
+    try:
+        out = subprocess.run(["ps", "-o", "ppid=", "-p", str(os.getppid())],
+                             capture_output=True, text=True, timeout=1)
+        pid = int(out.stdout.strip())
+        return pid if pid > 1 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def wait_exit(pid, limit=30.0):
+    """Wait (up to `limit` seconds) for the session's process to exit."""
+    if not pid:
+        return
+    end = time.time() + limit
+    while time.time() < end:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        except PermissionError:
+            pass
+        time.sleep(0.25)
+
+
+def in_use(top):
+    """True if any process (a shell, another session, a dev server) still has
+    its working directory inside `top`, or if that can't be determined."""
+    real = os.path.realpath(top)
+    inside = lambda p: p == real or p.startswith(real + os.sep)
+    me = os.getpid()
+    if os.path.isdir("/proc/self"):
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit() or int(pid) == me:
+                continue
+            try:
+                if inside(os.path.realpath(os.readlink("/proc/%s/cwd" % pid))):
+                    return True
+            except OSError:
+                continue
+        return False
+    try:
+        out = subprocess.run(["lsof", "-a", "-d", "cwd", "-Fpn"], capture_output=True,
+                             text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return True
+    pid = None
+    for line in out.stdout.splitlines():
+        if line.startswith("p"):
+            pid = int(line[1:] or 0)
+        elif line.startswith("n") and pid != me and inside(os.path.realpath(line[1:])):
+            return True
+    return False
+
+
+GLOB = set("*?[")
+
+
 def run_cli(args, timeout, actor=False):
     cli = find_cli()
     if not cli:
@@ -152,17 +211,17 @@ def session_end():
     top = linked_worktree(cwd)
     if not top or not find_cli():
         return
-    args = [sys.executable, os.path.abspath(__file__), "worker", top,
-            data.get("session_id", ""), data.get("reason", "other")]
     if os.environ.get("LYSOSOME_HOOK_SYNC") == "1":  # tests
-        worker(top, data.get("session_id", ""), data.get("reason", "other"))
+        worker(top, data.get("session_id", ""), data.get("reason", "other"), None)
         return
+    args = [sys.executable, os.path.abspath(__file__), "worker", top,
+            data.get("session_id", ""), data.get("reason", "other"), str(session_pid() or 0)]
     # Detach: the session may exit before the CLI finishes, and that's fine.
     subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, start_new_session=True, cwd="/", env=clean_env())
 
 
-def worker(top, session_id, reason):
+def worker(top, session_id, reason, pid):
     d = data_dir()
     # --days 0: is the task finished (clean, merged or pushed), not "is it old".
     rep = run_cli(["worktrees", top, "--json", "--days", "0", "--depth", "1", "--progress", "off"], 120)
@@ -191,7 +250,15 @@ def worker(top, session_id, reason):
     mode = os.environ.get("CLAUDE_PLUGIN_OPTION_AUTO_TIDY", "off")
     # Only finished tasks (merged), only when the session really ended, and
     # never REVIEW: `lysosome clean` re-checks all of it before acting.
-    if mode in ("strip-merged", "remove-merged") and reason in ENDED and entry["merged"]:
+    act = mode in ("strip-merged", "remove-merged") and reason in ENDED and entry["merged"]
+    if act:
+        # Let the session finish exiting, then never pull a folder out from
+        # under a shell, another session or a running dev server.
+        wait_exit(pid)
+        if in_use(top) or GLOB & set(f["path"]):
+            act = False
+            entry["skipped"] = "in use"
+    if act:
         args = None
         if mode == "remove-merged" and f["status"] == "REMOVABLE":
             args = ["clean", top, "--worktrees", "--only", f["id"], "--days", "0", "--depth", "1"]
@@ -277,7 +344,8 @@ def main():
         if cmd == "session-end":
             session_end()
         elif cmd == "worker" and len(sys.argv) >= 5:
-            worker(sys.argv[2], sys.argv[3], sys.argv[4])
+            pid = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5].isdigit() else None
+            worker(sys.argv[2], sys.argv[3], sys.argv[4], pid or None)
         elif cmd == "session-start":
             session_start()
         elif cmd == "report":
