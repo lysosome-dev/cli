@@ -13,6 +13,8 @@ All notable changes to this project are documented here. The format follows
   event right after its `detector` event, with the finding objects exactly
   as in the final report. Across all events they are the report's findings,
   so GUIs can show results while the scan runs. Additive; stdout unchanged.
+- Claude Code plugin (#41), installed with `/plugin install lysosome --marketplace lysosome-dev/cli`. When a session that ran in a linked git worktree ends, a background job checks it read-only with `lysosome worktrees --days 0` and records it. The next session reports what is safe to reclaim, once. It adds `/lysosome:status` and `/lysosome:tidy`; tidy dry-runs, then cleans only after you confirm. With the opt-in `auto_tidy` setting (`strip-merged` / `remove-merged`), a merged task's worktree is tidied when its session really ends; nothing happens on `/clear`. Every cleanup is `lysosome clean`, so REVIEW worktrees are never touched.
+- `LYSOSOME_ACTOR` (#41): `clean` records who asked as `actor` in the action log.
 
 - `--progress <auto|json|off>` (#38), a global flag. `json` writes
   newline-delimited progress events to stderr (stdout keeps the report) for

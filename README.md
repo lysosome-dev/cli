@@ -278,6 +278,29 @@ lysosome clean --json                            # the plan as JSON (schema/clea
 
 `LYSOSOME_TRASH_DIR=/some/folder` makes "Trash" mean "move into that folder" (same filesystem only), for sandboxes and tests.
 
+## Claude Code plugin: agents that clean up after themselves
+
+Coding agents make a worktree per task and walk away. The `lysosome` plugin for [Claude Code](https://code.claude.com) notices the worktrees your sessions leave behind and tells you what is safe to reclaim. If you opt in, it also tidies a finished task's worktree when the session ends. It needs the CLI on your `PATH` and `python3`.
+
+```text
+/plugin install lysosome --marketplace lysosome-dev/cli
+```
+
+On Claude Code older than 2.1.275, run `/plugin marketplace add lysosome-dev/cli` first, then `/plugin install lysosome@lysosome`.
+
+- **When a session ends** inside a linked git worktree, a background job runs `lysosome worktrees <worktree> --json --days 0`. It is read-only and asks whether the task is finished: clean, and merged or pushed. It records the answer. The hook returns at once and does nothing if the CLI isn't installed.
+- **When the next session starts**, you get one line about what earlier sessions left behind, for example "feat/rate-limits is clean, merged into origin/main: 870 MB can go". Each item is mentioned once.
+- **`/lysosome:status`** shows this repo's worktrees with status, size and reason, and changes nothing. **`/lysosome:tidy`** builds a plan, shows lysosome's dry run, and cleans only after you say yes. It never removes the worktree the session is running in.
+- **`auto_tidy`** (set it when you enable the plugin or in `/config`):
+
+  | Value | What happens when a session ends in a worktree whose branch is merged |
+  |---|---|
+  | `off` (default) | Nothing on disk changes; it is only recorded and reported |
+  | `strip-merged` | Its git-ignored `node_modules`, `target`, `.venv`… go to the Trash; the worktree stays |
+  | `remove-merged` | `git worktree remove` (the branch is kept), when lysosome says it is `REMOVABLE` |
+
+  Nothing happens on `/clear` or `/resume`, which keep the session going in the same folder. Every cleanup is `lysosome clean`, so the [safety rules](#safety-rules) still decide: dirty, untracked, locked or unpushed worktrees are never touched. Cleanups the plugin runs are written to the action log with `"actor": "claude-code"`.
+
 ## JSON output
 
 `--json` prints a stable, versioned document (described by [`schema/lysosome.schema.json`](schema/lysosome.schema.json), JSON Schema 2020-12). Only additive changes happen within a `schema_version`. `lysosome clean --json` prints the plan, and with `--yes` each item's result, described by [`schema/clean.schema.json`](schema/clean.schema.json). If a command run with `--json` fails, stdout gets `{"error": {"code", "message", "hint"}}` instead (exit status 1, or 2 for a command-line mistake), described by [`schema/error.schema.json`](schema/error.schema.json). Without `--json`, every error comes with a `hint:` line saying how to fix it.
@@ -287,6 +310,8 @@ lysosome clean --json                            # the plan as JSON (schema/clea
 ```bash
 lysosome scan --json --progress json 2> >(jq -c 'select(.event=="detector")') > report.json
 ```
+
+**Who asked.** Set `LYSOSOME_ACTOR` (lowercase letters, digits, `.`, `_`, `-`; at most 32 characters) and `clean` records it as `actor` on every action-log entry. Integrations such as the Claude Code plugin use it.
 
 **Undoing a Trash move.** Each item `clean --yes --json` moved to the Trash lists `result.trashed[]`: its `original` path and its `location` inside the Trash (the real path macOS or the freedesktop trash gave it, e.g. `~/.Trash/target 21-08-03-944`). Moving `location` back to `original` restores it. The action log records the same pairs.
 
