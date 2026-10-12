@@ -342,16 +342,19 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
             .map(PathBuf::from)
             .as_deref(),
     );
-    let log = ActionLog::open(&log_path).map_err(|e| {
-        errors::fail(
-            "action_log",
-            format!(
-                "could not open the action log {}: {e}; nothing was changed",
-                log_path.display()
-            ),
-            "make sure that folder is writable (or set XDG_STATE_HOME to another folder)",
-        )
-    })?;
+    let log = ActionLog::open(&log_path)
+        .map_err(|e| {
+            errors::fail(
+                "action_log",
+                format!(
+                    "could not open the action log {}: {e}; nothing was changed",
+                    log_path.display()
+                ),
+                "make sure that folder is writable (or set XDG_STATE_HOME to another folder)",
+            )
+        })?
+        // Integrations (the Claude Code plugin, schedulers) say who they are.
+        .with_actor(std::env::var("LYSOSOME_ACTOR").ok().as_deref());
     let dir_trash = std::env::var_os("LYSOSOME_TRASH_DIR")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())

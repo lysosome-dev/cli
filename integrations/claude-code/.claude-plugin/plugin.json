@@ -1,0 +1,23 @@
+{
+  "name": "lysosome",
+  "displayName": "lysosome",
+  "version": "0.1.0",
+  "description": "Agents that clean up after themselves: notices the git worktrees Claude Code sessions leave behind, reports what is safe to reclaim, and (opt-in) tidies merged ones when the session ends. Uses the lysosome CLI, whose safety rules decide what may go.",
+  "author": {
+    "name": "lysosome.dev",
+    "url": "https://lysosome.dev"
+  },
+  "homepage": "https://lysosome.dev",
+  "repository": "https://github.com/lysosome-dev/cli",
+  "license": "MIT",
+  "keywords": ["git-worktree", "disk-cleanup", "worktrees", "cleanup"],
+  "userConfig": {
+    "auto_tidy": {
+      "type": "string",
+      "title": "Tidy up when a session ends",
+      "description": "off (default): only notice and report. strip-merged: when the session's worktree is clean and merged, move its git-ignored build output and dependencies to the Trash and keep the worktree. remove-merged: also remove the worktree itself (git worktree remove; the branch is kept). REVIEW worktrees are never touched.",
+      "options": ["off", "strip-merged", "remove-merged"],
+      "default": "off"
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "lysosome",
+  "description": "lysosome for Claude Code: agents that clean up the worktrees and build output they leave behind",
+  "owner": {
+    "name": "lysosome.dev",
+    "url": "https://lysosome.dev"
+  },
+  "plugins": [
+    {
+      "name": "lysosome",
+      "source": "./integrations/claude-code",
+      "description": "Notices the git worktrees your sessions leave behind, tells you what is safe to reclaim, and (opt-in) tidies up when a merged task's session ends"
+    }
+  ]
+}

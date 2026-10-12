@@ -39,6 +39,7 @@ pub fn default_log_path(home: &Path, xdg_state_home: Option<&Path>) -> PathBuf {
 pub struct ActionLog {
     path: PathBuf,
     file: Mutex<File>,
+    actor: Option<String>,
 }
 
 impl ActionLog {
@@ -51,7 +52,30 @@ impl ActionLog {
         Ok(ActionLog {
             path: path.to_path_buf(),
             file: Mutex::new(file),
+            actor: None,
         })
+    }
+
+    /// Who asked for the cleanup (`claude-code`, a scheduler...), recorded as
+    /// `actor` on every entry. Only `[a-z0-9._-]`, at most 32 characters;
+    /// anything else is ignored.
+    pub fn with_actor(mut self, actor: Option<&str>) -> Self {
+        self.actor = actor
+            .filter(|a| {
+                !a.is_empty()
+                    && a.len() <= 32
+                    && a.bytes().all(|b| {
+                        b.is_ascii_lowercase()
+                            || b.is_ascii_digit()
+                            || matches!(b, b'.' | b'_' | b'-')
+                    })
+            })
+            .map(String::from);
+        self
+    }
+
+    pub fn actor(&self) -> Option<&str> {
+        self.actor.as_deref()
     }
 
     pub fn path(&self) -> &Path {
@@ -98,7 +122,10 @@ impl ActionLog {
         self.write(entry)
     }
 
-    fn write(&self, entry: serde_json::Value) -> std::io::Result<()> {
+    fn write(&self, mut entry: serde_json::Value) -> std::io::Result<()> {
+        if let Some(a) = &self.actor {
+            entry["actor"] = json!(a);
+        }
         let mut line = serde_json::to_vec(&entry).map_err(std::io::Error::other)?;
         line.push(b'\n');
         let mut f = self.file.lock().unwrap_or_else(|e| e.into_inner());
@@ -111,6 +138,23 @@ impl ActionLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn actor_is_recorded_only_when_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a.log");
+        let ok = ActionLog::open(&p).unwrap().with_actor(Some("claude-code"));
+        assert_eq!(ok.actor(), Some("claude-code"));
+        for bad in ["", "Claude Code", "x;rm", &"a".repeat(33)] {
+            assert_eq!(
+                ActionLog::open(&p).unwrap().with_actor(Some(bad)).actor(),
+                None
+            );
+        }
+        ok.write(json!({"outcome": "done"})).unwrap();
+        let line = std::fs::read_to_string(&p).unwrap();
+        assert!(line.contains(r#""actor":"claude-code""#), "{line}");
+    }
 
     #[test]
     fn log_path_per_platform() {
