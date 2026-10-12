@@ -27,7 +27,7 @@ use serde_json::{json, Value};
 
 use crate::errors;
 use crate::pick;
-use crate::progress::Spinner;
+use crate::progress::Reporter;
 use crate::ui::{self, human_bytes, pad_left, pad_right, plural, Painter, PathShortener};
 use crate::worktrees;
 use crate::GlobalArgs;
@@ -164,7 +164,6 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
     let shortener = PathShortener::new(Some(home.clone()));
     let sel = selection(args);
     let warn = Painter::new(ui::color_enabled(global.no_color, ui::stderr_is_tty()));
-    let wstyle = Style::new().yellow().bold();
 
     // --- scan ---------------------------------------------------------------
     let project_scopes =
@@ -185,15 +184,14 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
     if sel.scopes.contains(&Scope::Caches) {
         dets.extend(system::detectors());
     }
-    let spinner = ui::stderr_is_tty().then(|| {
-        Spinner::new(
-            roots
-                .iter()
-                .map(|r| shortener.short(r))
-                .collect::<Vec<_>>()
-                .join(", "),
-        )
-    });
+    let spinner = Reporter::new(
+        global.progress,
+        roots
+            .iter()
+            .map(|r| shortener.short(r))
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
     if let Some(s) = &spinner {
         if !project_scopes {
             s.set_message("Checking caches, AI models, Docker, Xcode and editors");
@@ -223,18 +221,18 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
     }
     for r in &scan.runs {
         if let Some(e) = &r.error {
-            eprintln!(
-                "{} {} scan failed: {e:#}",
-                warn.paint("warning:", wstyle),
-                r.id
+            Reporter::warn(
+                spinner.as_ref(),
+                &warn,
+                &format!("{} scan failed: {e:#}", r.id),
             );
         }
     }
     for m in &scan.report.skipped.missing_roots {
-        eprintln!(
-            "{} skipping {} (not a folder)",
-            warn.paint("warning:", wstyle),
-            m.display()
+        Reporter::warn(
+            spinner.as_ref(),
+            &warn,
+            &format!("skipping {} (not a folder)", m.display()),
         );
     }
 
@@ -388,18 +386,32 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
     install_sigint();
     ex.stop = Some(&STOP);
     let stream = !args.json;
-    let results = ex.execute(&plan, &mut |_, item, r| {
+    let events = spinner.as_ref().and_then(Reporter::json);
+    if let Some(j) = events {
+        j.plan(plan.items.len(), plan.total_bytes);
+    }
+    let total = plan.items.len();
+    let results = ex.execute(&plan, &mut |i, item, r| {
         if stream {
             print_now(&result_line(item, r, &p, &shortener));
+        }
+        if let Some(j) = events {
+            j.item(
+                i,
+                total,
+                &item.id,
+                serde_json::to_value(r).unwrap_or(Value::Null),
+            );
         }
     })?;
     let interrupted = results
         .iter()
         .any(|r| r.message.starts_with(clean::INTERRUPTED));
     if interrupted {
-        eprintln!(
-            "{} interrupted: stopped after the current item",
-            warn.paint("warning:", wstyle)
+        Reporter::warn(
+            spinner.as_ref(),
+            &warn,
+            "interrupted: stopped after the current item",
         );
     }
     let failed = interrupted || results.iter().any(|r| r.outcome == Outcome::Failed);

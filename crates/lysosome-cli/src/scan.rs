@@ -19,7 +19,7 @@ use lysosome_core::model::{Category, Finding, Report, Status, Tier};
 use lysosome_core::progress::{NoProgress, Phase};
 use owo_colors::Style;
 
-use crate::progress::Spinner;
+use crate::progress::Reporter;
 use crate::ui::{
     self, human_bytes, pad_left, pad_right, plural, thousands, tier_style, Painter, PathShortener,
 };
@@ -33,15 +33,14 @@ pub fn run(cmd: &ScanCmdArgs, global: &GlobalArgs) -> Result<String> {
     let roots = worktrees::resolve_roots(&args.roots, home.as_deref())?;
     let warn = Painter::new(ui::color_enabled(global.no_color, ui::stderr_is_tty()));
 
-    let spinner = ui::stderr_is_tty().then(|| {
-        Spinner::new(
-            roots
-                .iter()
-                .map(|r| shortener.short(r))
-                .collect::<Vec<_>>()
-                .join(", "),
-        )
-    });
+    let spinner = Reporter::new(
+        global.progress,
+        roots
+            .iter()
+            .map(|r| shortener.short(r))
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
     let mut ctx = ScanContext::new(roots, home.clone().unwrap_or_default());
     ctx.dormant_after_days = args.days;
     ctx.max_depth = args.depth;
@@ -55,9 +54,10 @@ pub fn run(cmd: &ScanCmdArgs, global: &GlobalArgs) -> Result<String> {
     // home they would look relative to the current directory.
     let system = !cmd.no_system && home.is_some();
     if !cmd.no_system && home.is_none() {
-        eprintln!(
-            "{} home folder unknown; skipping caches, AI models, Docker and Xcode",
-            warn.paint("warning:", Style::new().yellow().bold())
+        Reporter::warn(
+            spinner.as_ref(),
+            &warn,
+            "home folder unknown; skipping caches, AI models, Docker and Xcode",
         );
     }
     let detectors = if system {
@@ -80,17 +80,20 @@ pub fn run(cmd: &ScanCmdArgs, global: &GlobalArgs) -> Result<String> {
             )
         }));
     }
-    let w = Style::new().yellow().bold();
     for r in &run.runs {
         if let Some(e) = &r.error {
-            eprintln!("{} {} scan failed: {e:#}", warn.paint("warning:", w), r.id);
+            Reporter::warn(
+                spinner.as_ref(),
+                &warn,
+                &format!("{} scan failed: {e:#}", r.id),
+            );
         }
     }
     for m in &run.report.skipped.missing_roots {
-        eprintln!(
-            "{} skipping {} (not a folder)",
-            warn.paint("warning:", w),
-            m.display()
+        Reporter::warn(
+            spinner.as_ref(),
+            &warn,
+            &format!("skipping {} (not a folder)", m.display()),
         );
     }
     if global.profile {

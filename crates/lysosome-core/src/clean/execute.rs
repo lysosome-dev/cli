@@ -30,16 +30,29 @@ pub trait Trasher: Send + Sync {
     /// Move `path` (a file or folder, never followed if a symlink) out of the
     /// way, recoverably. Returns where it went, for the log.
     fn trash(&self, path: &Path) -> Result<String, String>;
+
+    /// Like [`Trasher::trash`], and also returns the item's new path inside
+    /// the Trash when the platform reports it (so it can be put back).
+    fn trash_to(&self, path: &Path) -> Result<(String, Option<PathBuf>), String> {
+        self.trash(path).map(|d| (d, None))
+    }
 }
 
-/// The system Trash via the `trash` crate: the macOS Trash (via
-/// `NSFileManager`, no Finder automation prompt) or the freedesktop.org trash
-/// on Linux.
+/// The system Trash: the macOS Trash (via `NSFileManager`, no Finder
+/// automation prompt) or the freedesktop.org trash on Linux.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemTrash;
 
 impl Trasher for SystemTrash {
     fn trash(&self, path: &Path) -> Result<String, String> {
+        self.trash_to(path).map(|(d, _)| d)
+    }
+
+    fn trash_to(&self, path: &Path) -> Result<(String, Option<PathBuf>), String> {
+        #[cfg(target_os = "macos")]
+        if let Some(s) = path.to_str() {
+            return macos_trash(s).map(|loc| ("Trash".into(), loc));
+        }
         #[allow(unused_mut)]
         let mut ctx = trash::TrashContext::default();
         #[cfg(target_os = "macos")]
@@ -49,8 +62,53 @@ impl Trasher for SystemTrash {
         }
         ctx.delete(path)
             .map_err(|e| format!("could not move to the Trash: {e}"))?;
-        Ok("Trash".into())
+        Ok(("Trash".into(), freedesktop_location(path)))
     }
+}
+
+/// `NSFileManager trashItemAtURL:resultingItemURL:`, keeping the resulting
+/// URL (the `trash` crate drops it). `path` is absolute.
+#[cfg(target_os = "macos")]
+fn macos_trash(path: &str) -> Result<Option<PathBuf>, String> {
+    use objc2::rc::Retained;
+    use objc2_foundation::{NSFileManager, NSString, NSURL};
+    let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+    let mut out: Option<Retained<NSURL>> = None;
+    NSFileManager::defaultManager()
+        .trashItemAtURL_resultingItemURL_error(&url, Some(&mut out))
+        .map_err(|e| format!("could not move to the Trash: {}", e.localizedDescription()))?;
+    Ok(out
+        .and_then(|u| u.path())
+        .map(|p| PathBuf::from(p.to_string())))
+}
+
+/// Where the freedesktop trash put `original`: the newest trash entry whose
+/// original path it is (`<trash>/files/<name>`, next to `info/<name>.trashinfo`).
+#[cfg(all(unix, not(target_os = "macos")))]
+fn freedesktop_location(original: &Path) -> Option<PathBuf> {
+    // The trash records the canonical parent (symlinks resolved), so match
+    // on that: `/home -> /var/home` must still find the entry.
+    let parent = original.parent()?;
+    let canonical = fs::canonicalize(parent)
+        .unwrap_or_else(|_| parent.to_path_buf())
+        .join(original.file_name()?);
+    let items = trash::os_limited::list().ok()?;
+    let item = items
+        .into_iter()
+        .filter(|i| {
+            let p = i.original_path();
+            p == canonical || p == original
+        })
+        .max_by_key(|i| i.time_deleted)?;
+    let info = PathBuf::from(&item.id);
+    let name = info.file_stem()?.to_owned();
+    let loc = info.parent()?.parent()?.join("files").join(name);
+    fs::symlink_metadata(&loc).is_ok().then_some(loc)
+}
+
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+fn freedesktop_location(_original: &Path) -> Option<PathBuf> {
+    None
 }
 
 /// "Trash" into a folder of your choice (a rename, so it only works within
@@ -85,6 +143,11 @@ impl Trasher for DirTrash {
         fs::rename(path, &dest)
             .map_err(|e| format!("could not move to {}: {e}", dest.display()))?;
         Ok(dest.to_string_lossy().into_owned())
+    }
+
+    fn trash_to(&self, path: &Path) -> Result<(String, Option<PathBuf>), String> {
+        self.trash(path)
+            .map(|d| (d.clone(), Some(PathBuf::from(d))))
     }
 }
 
@@ -137,6 +200,18 @@ pub struct ItemResult {
     pub destination: Option<String>,
     /// Why it was skipped, why it failed, or a short summary of what happened.
     pub message: String,
+    /// Every entry moved to the Trash for this item, with its new location
+    /// inside the Trash when known, so it can be put back.
+    pub trashed: Vec<Trashed>,
+}
+
+/// One entry moved to the Trash.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Trashed {
+    /// Where it was.
+    pub original: PathBuf,
+    /// Where it is now, inside the Trash (`null` when the platform doesn't say).
+    pub location: Option<PathBuf>,
 }
 
 impl ItemResult {
@@ -146,6 +221,7 @@ impl ItemResult {
             freed_bytes: 0,
             destination: None,
             message: reason.into(),
+            trashed: Vec::new(),
         }
     }
 
@@ -155,7 +231,13 @@ impl ItemResult {
             freed_bytes: 0,
             destination: dest,
             message: msg.into(),
+            trashed: Vec::new(),
         }
+    }
+
+    fn with_trashed(mut self, trashed: Vec<Trashed>) -> Self {
+        self.trashed = trashed;
+        self
     }
 
     fn done(freed: u64, dest: impl Into<String>, msg: impl Into<String>) -> Self {
@@ -164,6 +246,7 @@ impl ItemResult {
             freed_bytes: freed,
             destination: Some(dest.into()),
             message: msg.into(),
+            trashed: Vec::new(),
         }
     }
 }
@@ -441,9 +524,16 @@ impl<'a> Executor<'a> {
         let mut freed = 0;
         let mut dests = Vec::new();
         let mut errors = Vec::new();
+        let mut trashed = Vec::new();
         for (p, size) in targets {
             let r = match action {
-                ActionKind::Trash => self.trasher.trash(p),
+                ActionKind::Trash => self.trasher.trash_to(p).map(|(d, location)| {
+                    trashed.push(Trashed {
+                        original: p.clone(),
+                        location,
+                    });
+                    d
+                }),
                 // Every folder reaching here was inspect_tree'd moments ago.
                 ActionKind::Delete => {
                     delete_checked(p, true).map(|()| "deleted permanently".into())
@@ -466,10 +556,13 @@ impl<'a> Executor<'a> {
                 ActionKind::Delete => "deleted permanently".to_string(),
                 _ => "moved to the Trash".to_string(),
             };
-            ItemResult::done(freed, dest.unwrap_or_default(), msg)
+            let mut r = ItemResult::done(freed, dest.unwrap_or_default(), msg);
+            r.trashed = trashed;
+            r
         } else {
             let mut r = ItemResult::fail(dest, errors.join("; "));
             r.freed_bytes = freed;
+            r.trashed = trashed;
             r
         }
     }
@@ -537,6 +630,7 @@ impl<'a> Executor<'a> {
         // `git worktree remove` deletes ignored files outright. Move the ones
         // that aren't build output to the Trash first (unless --permanent).
         let mut rescued: Vec<PathBuf> = Vec::new();
+        let mut trashed: Vec<Trashed> = Vec::new();
         let mut rescued_bytes = 0u64;
         let rescued_note = |r: &[PathBuf]| -> String {
             if r.is_empty() {
@@ -566,8 +660,12 @@ impl<'a> Executor<'a> {
                     Ok(_) => crate::size::allocated_size(&p),
                     Err(_) => 0,
                 };
-                match self.trasher.trash(&p) {
-                    Ok(_) => {
+                match self.trasher.trash_to(&p) {
+                    Ok((_, location)) => {
+                        trashed.push(Trashed {
+                            original: p.clone(),
+                            location,
+                        });
                         rescued.push(p);
                         rescued_bytes += size;
                     }
@@ -577,7 +675,7 @@ impl<'a> Executor<'a> {
                             p.display(),
                             rescued_note(&rescued)
                         );
-                        return Ok(ItemResult::fail(dest, msg));
+                        return Ok(ItemResult::fail(dest, msg).with_trashed(trashed));
                     }
                 }
             }
@@ -620,7 +718,8 @@ impl<'a> Executor<'a> {
                 return Ok(ItemResult::fail(
                     dest,
                     format!("could not run git: {e}{}", rescued_note(&rescued)),
-                ))
+                )
+                .with_trashed(trashed))
             }
         };
         if !out.success {
@@ -635,13 +734,15 @@ impl<'a> Executor<'a> {
                     "git worktree remove failed: {why}{}",
                     rescued_note(&rescued)
                 ),
-            ));
+            )
+            .with_trashed(trashed.clone()));
         }
         if fs::symlink_metadata(path).is_ok() {
             return Ok(ItemResult::fail(
                 dest,
                 "git reported success but the folder is still there",
-            ));
+            )
+            .with_trashed(trashed.clone()));
         }
         let pruned = process::run(&Proc {
             program: git,
@@ -670,7 +771,8 @@ impl<'a> Executor<'a> {
             total.saturating_sub(rescued_bytes),
             "git worktree remove",
             msg,
-        ))
+        )
+        .with_trashed(trashed))
     }
 
     fn run_command(

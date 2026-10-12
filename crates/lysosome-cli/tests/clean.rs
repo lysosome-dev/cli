@@ -1073,3 +1073,158 @@ fn squash_merged_worktrees_are_cleaned_after_asking_github_again() {
     assert!(!fx.p("code/app-unpushed").exists());
     assert_eq!(fx.git("code/app", &["rev-parse", "unpushed"]).trim(), head);
 }
+
+/// Every stderr line of `--progress json` is a schema-valid progress event.
+fn progress_events(stderr: &[u8]) -> Vec<Value> {
+    let schema: Value = serde_json::from_str(
+        &fs::read_to_string(repo_root().join("schema/progress.schema.json")).unwrap(),
+    )
+    .unwrap();
+    let v = jsonschema::draft202012::new(&schema).expect("schema compiles");
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .map(|l| {
+            let e: Value = serde_json::from_str(l)
+                .unwrap_or_else(|err| panic!("stderr line is not JSON ({err}): {l}"));
+            let errors: Vec<String> = v.iter_errors(&e).map(|x| x.to_string()).collect();
+            assert!(errors.is_empty(), "{l}: {}", errors.join("; "));
+            e
+        })
+        .collect()
+}
+
+#[test]
+fn trashed_items_record_where_they_went_and_progress_streams_as_json() {
+    let fx = Fixture::new("make_projects.sh");
+    let rust_target = fx.p("code/old-rust/target");
+    let out = fx.ok(&[
+        "clean",
+        &fx.s("code"),
+        "--artifacts",
+        "--yes",
+        "--json",
+        "--progress",
+        "json",
+    ]);
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    validate(&doc);
+    let item = item_by_path(&doc, &rust_target).expect("target planned");
+    assert_eq!(item["result"]["outcome"], "done", "{item:#}");
+    let trashed = item["result"]["trashed"].as_array().unwrap();
+    assert_eq!(trashed.len(), 1, "{item:#}");
+    assert_eq!(trashed[0]["original"], fx.s("code/old-rust/target"));
+    let location = PathBuf::from(trashed[0]["location"].as_str().unwrap());
+    assert!(location.starts_with(fx.trash()), "{}", location.display());
+    assert!(location.exists() && !rust_target.exists());
+
+    // Putting it back is a rename.
+    fs::rename(&location, &rust_target).unwrap();
+    assert!(rust_target.join("debug").exists() || rust_target.read_dir().is_ok());
+
+    // The action log says where it went, too.
+    let log = fx.log_lines();
+    assert!(log.iter().any(
+        |e| e["trashed"][0]["original"] == fx.s("code/old-rust/target")
+            && e["trashed"][0]["location"].is_string()
+    ));
+
+    // stderr: only progress events; a plan, then one item event per item.
+    let events = progress_events(&out.stderr);
+    let plan = events
+        .iter()
+        .find(|e| e["event"] == "plan")
+        .expect("plan event");
+    let n = doc["items"].as_array().unwrap().len();
+    assert_eq!(plan["items"], n);
+    let items: Vec<&Value> = events.iter().filter(|e| e["event"] == "item").collect();
+    assert_eq!(items.len(), n);
+    for (i, e) in items.iter().enumerate() {
+        assert_eq!(e["index"], i);
+        assert_eq!(e["total"], n);
+        assert_eq!(e["id"], doc["items"][i]["id"]);
+        assert_eq!(e["result"]["outcome"], doc["items"][i]["result"]["outcome"]);
+    }
+}
+
+#[test]
+fn scan_progress_json_keeps_stdout_clean_and_reports_phases_and_detectors() {
+    let fx = Fixture::new("make_worktrees.sh");
+    let out = fx.ok(&[
+        "scan",
+        &fx.s("."),
+        "--no-system",
+        "--no-gh",
+        "--json",
+        "--progress",
+        "json",
+    ]);
+    // stdout is exactly the report.
+    let doc: Value = serde_json::from_slice(&out.stdout).expect("stdout is the JSON report");
+    assert_eq!(doc["schema_version"], 1);
+    let events = progress_events(&out.stderr);
+    assert!(events
+        .iter()
+        .any(|e| e["event"] == "phase_start" && e["phase"] == "walk"));
+    assert!(events
+        .iter()
+        .any(|e| e["event"] == "phase_finish" && e["phase"] == "walk"));
+    for id in ["worktrees", "artifacts"] {
+        let d = events
+            .iter()
+            .find(|e| e["event"] == "detector" && e["id"] == id)
+            .unwrap_or_else(|| panic!("no detector event for {id}"));
+        assert!(d["error"].is_null());
+    }
+    let wt = events
+        .iter()
+        .find(|e| e["event"] == "detector" && e["id"] == "worktrees")
+        .unwrap();
+    let found = doc["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["category"] == "worktrees")
+        .count();
+    assert_eq!(wt["findings"], found);
+    // Elapsed time never goes backwards within one phase stream.
+    assert!(events.iter().all(|e| e["elapsed_ms"].is_u64()));
+
+    // --progress off and the default (not a terminal): stderr stays quiet.
+    for args in [&["--progress", "off"][..], &[][..]] {
+        let mut a = vec!["scan", "--no-system", "--no-gh", "--json"];
+        let root = fx.s(".");
+        a.push(&root);
+        a.extend_from_slice(args);
+        let out = fx.ok(&a);
+        assert!(
+            out.stderr.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn warnings_are_events_in_json_progress_mode() {
+    let fx = Fixture::new("make_worktrees.sh");
+    let missing = fx.s("no-such-folder");
+    let out = fx.ok(&[
+        "scan",
+        &fx.s("."),
+        &missing,
+        "--no-system",
+        "--no-gh",
+        "--json",
+        "--progress",
+        "json",
+    ]);
+    let events = progress_events(&out.stderr);
+    assert!(
+        events
+            .iter()
+            .any(|e| e["event"] == "warning"
+                && e["message"].as_str().unwrap().contains("not a folder")),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

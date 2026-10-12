@@ -9,7 +9,7 @@ use lysosome_core::progress::{NoProgress, Phase};
 use lysosome_core::worktree::{self, ScanOptions, Worktree, WorktreeScan};
 use owo_colors::Style;
 
-use crate::progress::Spinner;
+use crate::progress::Reporter;
 use crate::ui::{
     self, human_bytes, pad_left, pad_right, plural, thousands, Painter, PathShortener,
 };
@@ -32,25 +32,26 @@ pub fn run(args: &WorktreesArgs, global: &GlobalArgs) -> Result<String> {
     let err_color = ui::color_enabled(global.no_color, ui::stderr_is_tty());
     let warn = Painter::new(err_color);
 
-    let scan = if ui::stderr_is_tty() {
-        let label = roots
-            .iter()
-            .map(|r| shortener.short(r))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let spinner = Spinner::new(label);
-        let res = worktree::scan(&opts, &spinner);
-        spinner.clear();
-        res?
-    } else {
-        worktree::scan(&opts, &NoProgress)?
+    let label = roots
+        .iter()
+        .map(|r| shortener.short(r))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let reporter = Reporter::new(global.progress, label);
+    let scan = match &reporter {
+        Some(r) => {
+            let res = worktree::scan(&opts, r);
+            r.clear();
+            res?
+        }
+        None => worktree::scan(&opts, &NoProgress)?,
     };
 
     for m in &scan.missing_roots {
-        eprintln!(
-            "{} skipping {} (not a folder)",
-            warn.paint("warning:", Style::new().yellow().bold()),
-            m.display()
+        Reporter::warn(
+            reporter.as_ref(),
+            &warn,
+            &format!("skipping {} (not a folder)", m.display()),
         );
     }
     if global.profile {

@@ -194,6 +194,7 @@ Only PRs merged into the repository's default branch, from a branch of the repos
 | `--no-gh` | | Don't ask GitHub (via `gh`) whether `REVIEW` worktrees were squash-merged |
 | `--offline` | | Never use the network (today: same as `--no-gh`) |
 | `--no-color` | | Disable color (`NO_COLOR` is honored too; color is off when piped) |
+| `--progress MODE` | `auto` | Progress on stderr: `auto` (a spinner on a terminal), `json` (newline-delimited events for programs) or `off` |
 
 ## What it finds: caches, AI models, Docker, Xcode
 
@@ -280,6 +281,14 @@ lysosome clean --json                            # the plan as JSON (schema/clea
 ## JSON output
 
 `--json` prints a stable, versioned document (described by [`schema/lysosome.schema.json`](schema/lysosome.schema.json), JSON Schema 2020-12). Only additive changes happen within a `schema_version`. `lysosome clean --json` prints the plan, and with `--yes` each item's result, described by [`schema/clean.schema.json`](schema/clean.schema.json). If a command run with `--json` fails, stdout gets `{"error": {"code", "message", "hint"}}` instead (exit status 1, or 2 for a command-line mistake), described by [`schema/error.schema.json`](schema/error.schema.json). Without `--json`, every error comes with a `hint:` line saying how to fix it.
+
+**Progress for programs.** `--progress json` writes one JSON event per line to **stderr** while stdout keeps the report, so a GUI or script can show live progress: `phase_start` (with a human `label`), throttled `advance` counts, `phase_finish`, a `detector` event as each detector finishes (`{"id": "docker", "findings": 32, "error": null}`), and during `clean --yes` a `plan` event followed by one `item` event per item. Events are described by [`schema/progress.schema.json`](schema/progress.schema.json); ignore events you don't know.
+
+```bash
+lysosome scan --json --progress json 2> >(jq -c 'select(.event=="detector")') > report.json
+```
+
+**Undoing a Trash move.** Each item `clean --yes --json` moved to the Trash lists `result.trashed[]`: its `original` path and its `location` inside the Trash (the real path macOS or the freedesktop trash gave it, e.g. `~/.Trash/target 21-08-03-944`). Moving `location` back to `original` restores it. The action log records the same pairs.
 
 ```json
 {

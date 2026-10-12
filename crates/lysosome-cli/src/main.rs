@@ -177,6 +177,17 @@ pub struct GlobalArgs {
     /// Print per-phase timings (walk, git, size) to stderr
     #[arg(long, global = true)]
     pub profile: bool,
+
+    /// Progress on stderr: auto (a spinner on a terminal), json (newline-delimited
+    /// events for programs, schema/progress.schema.json) or off
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        value_name = "MODE",
+        default_value = "auto"
+    )]
+    pub progress: progress::ProgressMode,
 }
 
 #[derive(Debug, Subcommand)]

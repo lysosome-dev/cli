@@ -1,0 +1,220 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/lysosome-dev/cli/schema/progress.schema.json",
+  "title": "lysosome progress event",
+  "description": "One line of `--progress json` output: newline-delimited JSON on stderr (stdout keeps the report). Every line is one event object; warnings arrive as `warning` events. Other output that is not an event (`--profile` timings, a crash) can still reach stderr, so skip lines that are not JSON objects. Consumers must ignore unknown events and properties; events are only added within a major version. `advance` events are throttled (at most about 10 per second per phase) and a phase's final count is always sent before its `phase_finish`. Phases can overlap and some phases end without a `phase_finish`, so treat the most recent `phase_start` as the current one.",
+  "type": "object",
+  "required": ["type", "event", "elapsed_ms"],
+  "properties": {
+    "type": {
+      "const": "progress"
+    },
+    "event": {
+      "enum": [
+        "phase_start",
+        "advance",
+        "phase_finish",
+        "detector",
+        "message",
+        "warning",
+        "plan",
+        "item"
+      ]
+    },
+    "elapsed_ms": {
+      "description": "Milliseconds since the command started.",
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "event": {
+            "const": "phase_start"
+          }
+        }
+      },
+      "then": {
+        "required": ["phase", "label", "total"],
+        "properties": {
+          "phase": {
+            "$ref": "#/$defs/phase"
+          },
+          "label": {
+            "description": "Human-readable description, e.g. \"Looking for repositories in ~/code\".",
+            "type": "string"
+          },
+          "total": {
+            "description": "Work items in this phase, or null when unknown (folders walked).",
+            "type": ["integer", "null"],
+            "minimum": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event": {
+            "const": "advance"
+          }
+        }
+      },
+      "then": {
+        "required": ["phase", "done", "total"],
+        "properties": {
+          "phase": {
+            "$ref": "#/$defs/phase"
+          },
+          "done": {
+            "description": "Work items finished so far in this phase.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "total": {
+            "type": ["integer", "null"],
+            "minimum": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event": {
+            "const": "phase_finish"
+          }
+        }
+      },
+      "then": {
+        "required": ["phase"],
+        "properties": {
+          "phase": {
+            "$ref": "#/$defs/phase"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event": {
+            "const": "detector"
+          }
+        }
+      },
+      "then": {
+        "required": ["id", "category", "findings", "error"],
+        "properties": {
+          "id": {
+            "description": "Stable detector id: worktrees, artifacts, ollama, docker, npm, xcode-deriveddata, ...",
+            "type": "string",
+            "minLength": 1
+          },
+          "category": {
+            "enum": [
+              "worktrees",
+              "artifacts",
+              "ai_models",
+              "xcode",
+              "package_caches",
+              "containers",
+              "editors",
+              "android"
+            ]
+          },
+          "findings": {
+            "description": "Items the detector reported.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "error": {
+            "description": "Why the detector failed, or null.",
+            "type": ["string", "null"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event": {
+            "enum": ["message", "warning"]
+          }
+        }
+      },
+      "then": {
+        "required": ["message"],
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event": {
+            "const": "plan"
+          }
+        }
+      },
+      "then": {
+        "required": ["items", "bytes"],
+        "properties": {
+          "items": {
+            "description": "`clean --yes`: items about to be acted on.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event": {
+            "const": "item"
+          }
+        }
+      },
+      "then": {
+        "required": ["index", "total", "id", "result"],
+        "properties": {
+          "index": {
+            "description": "0-based position in the plan.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "result": {
+            "description": "Same shape as items[].result in clean.schema.json.",
+            "type": "object",
+            "required": ["outcome", "freed_bytes", "destination", "message"]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "phase": {
+      "description": "walk: looking for repositories. analyze: git state and sizes. git, size: the same, reported separately. ignore-check: asking git which artifact folders are ignored. artifacts: measuring project artifacts. gh: asking GitHub about squash merges. New phases may appear.",
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

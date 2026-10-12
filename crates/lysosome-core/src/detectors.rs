@@ -83,6 +83,12 @@ pub fn run(detectors: &[Box<dyn Detector>], ctx: &ScanContext<'_>) -> ScanRun {
                 s.spawn(move || {
                     let t = Instant::now();
                     let out = d.run(ctx);
+                    let (n, err) = match &out {
+                        Ok(o) => (o.findings.len(), None),
+                        Err(e) => (0, Some(e.to_string())),
+                    };
+                    ctx.progress
+                        .detector_finished(d.id(), d.category(), n, err.as_deref());
                     (t.elapsed(), out)
                 })
             })

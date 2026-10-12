@@ -194,7 +194,19 @@ pub fn run(detectors: &[Box<dyn Detector>], ctx: &ScanContext<'_>) -> RunOutput 
             .map(|d| {
                 s.spawn(move || {
                     let start = std::time::Instant::now();
-                    let f = d.scan(ctx).unwrap_or_default();
+                    let f = match d.scan(ctx) {
+                        Ok(f) => {
+                            ctx.progress
+                                .detector_finished(d.id(), d.category(), f.len(), None);
+                            f
+                        }
+                        Err(e) => {
+                            let e = e.to_string();
+                            ctx.progress
+                                .detector_finished(d.id(), d.category(), 0, Some(&e));
+                            Vec::new()
+                        }
+                    };
                     (d.id(), start.elapsed(), f)
                 })
             })

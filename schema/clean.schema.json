@@ -154,7 +154,22 @@
           "description": "Where it went: Trash, a LYSOSOME_TRASH_DIR path, deleted permanently, git worktree remove, command.",
           "type": ["string", "null"]
         },
-        "message": { "type": "string" }
+        "message": { "type": "string" },
+        "trashed": {
+          "description": "Entries moved to the Trash for this item (since 0.4.0; consumers must tolerate its absence): each original path and its new location inside the Trash when the platform reports it, so it can be put back by moving it there again.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["original", "location"],
+            "properties": {
+              "original": { "$ref": "#/$defs/path" },
+              "location": {
+                "description": "Path inside the Trash, or null when unknown.",
+                "oneOf": [{ "$ref": "#/$defs/path" }, { "type": "null" }]
+              }
+            }
+          }
+        }
       }
     },
     "excluded": {
