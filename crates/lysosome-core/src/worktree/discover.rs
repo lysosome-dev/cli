@@ -49,12 +49,20 @@ struct Found {
 
 /// Discover repositories under `roots` (absolute, canonical directories).
 pub(crate) fn discover(roots: &[PathBuf], max_depth: usize, progress: &dyn Progress) -> Discovery {
-    let found = Mutex::new(Found::default());
     let opts = WalkOptions {
         max_depth,
         ..WalkOptions::default()
     };
-    let stats = walk::walk(roots, &opts, progress, |v| {
+    discover_with(roots, &opts, progress)
+}
+
+/// [`discover`] with explicit walk options. Nothing inside `opts.skip_paths`
+/// is read, including worktrees reached through pointers from outside.
+fn discover_with(roots: &[PathBuf], opts: &WalkOptions, progress: &dyn Progress) -> Discovery {
+    let max_depth = opts.max_depth;
+    let skip = &opts.skip_paths;
+    let found = Mutex::new(Found::default());
+    let stats = walk::walk(roots, opts, progress, |v| {
         let arts: Vec<PathBuf> = v
             .entries
             .iter()
@@ -80,7 +88,10 @@ pub(crate) fn discover(roots: &[PathBuf], max_depth: usize, progress: &dyn Progr
             let dotgit = v.path.join(".git");
             match dotgit_kind(e.kind) {
                 DotGit::File => {
-                    if let Some(gd) = read_gitdir_pointer(&dotgit) {
+                    // A worktree whose repository is in a skipped folder is
+                    // left out unread: its git dir lives there.
+                    let gd = read_gitdir_pointer(&dotgit).filter(|gd| !walk::is_within(gd, skip));
+                    if let Some(gd) = gd {
                         // Submodules (`.git/modules/x`) and `--separate-git-dir`
                         // repos also use .git files; keep only linked worktrees.
                         if is_linked_worktree_gitdir(&gd) {
@@ -122,6 +133,10 @@ pub(crate) fn discover(roots: &[PathBuf], max_depth: usize, progress: &dyn Progr
             };
             let dotgit = absolutize(&meta, Path::new(raw.trim()));
             let wt_path = dotgit.parent().map(Path::to_path_buf).unwrap_or_default();
+            // A worktree placed in a skipped folder isn't looked at (or called stale).
+            if walk::is_within(&wt_path, skip) {
+                continue;
+            }
             if wt_path.is_dir() {
                 // Only trust the record if the folder's .git still points back
                 // at it; otherwise `git -C` would analyze whatever encloses it.
@@ -154,6 +169,7 @@ pub(crate) fn discover(roots: &[PathBuf], max_depth: usize, progress: &dyn Progr
     Discovery {
         candidates: worktrees
             .into_iter()
+            .filter(|(path, gitdir)| !walk::is_within(path, skip) && !walk::is_within(gitdir, skip))
             .map(|(path, gitdir)| Candidate { path, gitdir })
             .collect(),
         stale,
@@ -251,6 +267,60 @@ mod tests {
         assert!(!is_linked_worktree_gitdir(Path::new(
             "/worktrees/store/foo.git"
         )));
+    }
+
+    #[test]
+    fn worktree_pointers_into_skipped_folders_are_not_followed() {
+        let t = tempfile::tempdir().unwrap();
+        let r = t.path().canonicalize().unwrap();
+        let docs = r.join("Documents");
+        let mk = |p: PathBuf, body: String| {
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, body).unwrap();
+        };
+        // A main repo outside, with one worktree inside the skipped folder (w1)
+        // and one outside (w3).
+        fs::create_dir_all(r.join("code/main/.git/worktrees")).unwrap();
+        for (name, wt) in [("w1", docs.join("w1")), ("w3", r.join("wts/w3"))] {
+            let meta = r.join("code/main/.git/worktrees").join(name);
+            mk(
+                meta.join("gitdir"),
+                format!("{}\n", wt.join(".git").display()),
+            );
+            mk(wt.join(".git"), format!("gitdir: {}\n", meta.display()));
+        }
+        // A worktree outside whose repository is inside the skipped folder.
+        let inner = docs.join("repo/.git/worktrees/w2");
+        mk(
+            inner.join("gitdir"),
+            format!("{}\n", r.join("wts/w2/.git").display()),
+        );
+        mk(
+            r.join("wts/w2/.git"),
+            format!("gitdir: {}\n", inner.display()),
+        );
+
+        let names = |skip: Vec<PathBuf>| {
+            let opts = WalkOptions {
+                skip_paths: skip,
+                ..WalkOptions::default()
+            };
+            let d = discover_with(
+                &[r.join("code"), r.join("wts")],
+                &opts,
+                &crate::progress::NoProgress,
+            );
+            assert!(d.stale.is_empty());
+            let mut n: Vec<String> = d
+                .candidates
+                .iter()
+                .map(|c| c.path.file_name().unwrap().to_string_lossy().into_owned())
+                .collect();
+            n.sort();
+            n
+        };
+        assert_eq!(names(Vec::new()), ["w1", "w2", "w3"]);
+        assert_eq!(names(vec![docs]), ["w3"]);
     }
 
     #[test]
