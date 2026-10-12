@@ -19,7 +19,7 @@ use lysosome_core::model::{Category, Finding, Report, Status, Tier};
 use lysosome_core::progress::{NoProgress, Phase};
 use owo_colors::Style;
 
-use crate::progress::Spinner;
+use crate::progress::Reporter;
 use crate::ui::{
     self, human_bytes, pad_left, pad_right, plural, thousands, tier_style, Painter, PathShortener,
 };
@@ -33,15 +33,14 @@ pub fn run(cmd: &ScanCmdArgs, global: &GlobalArgs) -> Result<String> {
     let roots = worktrees::resolve_roots(&args.roots, home.as_deref())?;
     let warn = Painter::new(ui::color_enabled(global.no_color, ui::stderr_is_tty()));
 
-    let spinner = ui::stderr_is_tty().then(|| {
-        Spinner::new(
-            roots
-                .iter()
-                .map(|r| shortener.short(r))
-                .collect::<Vec<_>>()
-                .join(", "),
-        )
-    });
+    let spinner = Reporter::new(
+        global.progress,
+        roots
+            .iter()
+            .map(|r| shortener.short(r))
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
     let mut ctx = ScanContext::new(roots, home.clone().unwrap_or_default());
     ctx.dormant_after_days = args.days;
     ctx.max_depth = args.depth;

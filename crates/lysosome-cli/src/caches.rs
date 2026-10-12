@@ -11,7 +11,7 @@ use lysosome_core::model::{Category, CleanupAction, Finding, Report, Skipped, St
 use lysosome_core::system::{self, RunOutput};
 use owo_colors::Style;
 
-use crate::progress::Spinner;
+use crate::progress::Reporter;
 use crate::ui::{self, human_bytes, pad_left, pad_right, plural, Painter, PathShortener};
 use crate::GlobalArgs;
 
@@ -68,13 +68,16 @@ pub fn run(args: &CachesArgs, global: &GlobalArgs) -> Result<String> {
     let ctx = ScanContext::new(Vec::new(), home);
 
     let start = Instant::now();
-    let spinner = ui::stderr_is_tty().then(|| {
-        let s = Spinner::new(String::new());
+    let spinner = Reporter::new(global.progress, String::new());
+    if let Some(s) = &spinner {
         s.set_message("Checking caches, AI models, Docker, Xcode and editors");
-        s
-    });
+    }
+    let mut ctx = ctx;
+    if let Some(s) = &spinner {
+        ctx.progress = s;
+    }
     let out = system::run(&detectors, &ctx);
-    if let Some(s) = spinner {
+    if let Some(s) = &spinner {
         s.clear();
     }
     let elapsed = start.elapsed();
