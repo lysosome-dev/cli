@@ -9,6 +9,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `--skip <PATH>` (#44), a global, repeatable option: leave that exact
+  folder out of every walk (`scan`, `worktrees`, `clean`). It is never listed
+  or entered, so on macOS a protected folder (Desktop, Documents, Downloads)
+  never triggers a privacy prompt. Give `clean` the same `--skip` as the scan
+  that found its items.
 - `--progress json` streams each detector's findings (#40): a `findings`
   event right after its `detector` event, with the finding objects exactly
   as in the final report. Across all events they are the report's findings,

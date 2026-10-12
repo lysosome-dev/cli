@@ -188,6 +188,11 @@ pub struct GlobalArgs {
         default_value = "auto"
     )]
     pub progress: progress::ProgressMode,
+
+    /// Leave this folder out: never listed or entered (repeatable). `clean`
+    /// needs the same --skip as the scan that found its items
+    #[arg(long = "skip", global = true, value_name = "PATH")]
+    pub skip: Vec<std::path::PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -286,6 +291,7 @@ fn main() -> ExitCode {
         Ok(c) => c,
         Err(e) => return usage_error(e),
     };
+    lysosome_core::walk::set_skip_paths(&cli.global.skip);
     let json = cli.command.as_ref().is_some_and(Command::json);
     let mut failed = false;
     let result = match &cli.command {

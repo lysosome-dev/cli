@@ -697,3 +697,33 @@ fn scan_includes_system_detectors() {
         "models shown by name:\n{text}"
     );
 }
+
+#[test]
+fn skip_leaves_exact_folders_out() {
+    let fx = Fixture::projects();
+    let all = fx.json(&[]);
+    let has = |r: &Value, prefix: &str| {
+        findings(r)
+            .iter()
+            .filter(|f| f["category"] == "artifacts")
+            .any(|f| fx.rel(f).starts_with(prefix))
+    };
+    assert!(has(&all, "old-rust/"), "fixture has old-rust artifacts");
+
+    let skip = fx.code().join("old-rust");
+    let report = fx.json(&["--skip", skip.to_str().unwrap()]);
+    assert!(!has(&report, "old-rust/"), "skipped folder isn't scanned");
+    assert!(has(&report, "old-web/"), "everything else still is");
+
+    // The option is global: it also works before the subcommand.
+    let code = fx.code();
+    let out = fx.run(&[
+        "--skip",
+        skip.to_str().unwrap(),
+        "scan",
+        code.to_str().unwrap(),
+        "--json",
+    ]);
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(!has(&report, "old-rust/"));
+}
