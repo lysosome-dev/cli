@@ -66,6 +66,16 @@ pub trait Progress: Sync {
         _error: Option<&str>,
     ) {
     }
+    /// A detector's findings, exactly as they will appear in the report, sent
+    /// as soon as it finishes (after [`Progress::detector_finished`]), so a
+    /// client can show partial results while other detectors still run.
+    fn detector_findings(
+        &self,
+        _id: &'static str,
+        _category: crate::model::Category,
+        _findings: &[crate::model::Finding],
+    ) {
+    }
 }
 
 /// A [`Progress`] that ignores everything.

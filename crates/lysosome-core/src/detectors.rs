@@ -89,6 +89,10 @@ pub fn run(detectors: &[Box<dyn Detector>], ctx: &ScanContext<'_>) -> ScanRun {
                     };
                     ctx.progress
                         .detector_finished(d.id(), d.category(), n, err.as_deref());
+                    if let Ok(o) = &out {
+                        ctx.progress
+                            .detector_findings(d.id(), d.category(), &o.findings);
+                    }
                     (t.elapsed(), out)
                 })
             })

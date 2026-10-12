@@ -15,6 +15,7 @@
         "advance",
         "phase_finish",
         "detector",
+        "findings",
         "message",
         "warning",
         "plan",
@@ -133,6 +134,36 @@
           "error": {
             "description": "Why the detector failed, or null.",
             "type": ["string", "null"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event": {
+            "const": "findings"
+          }
+        }
+      },
+      "then": {
+        "required": ["id", "category", "findings"],
+        "properties": {
+          "id": {
+            "description": "The detector that just finished (sent right after its `detector` event).",
+            "type": "string",
+            "minLength": 1
+          },
+          "category": {
+            "enum": ["worktrees", "artifacts", "ai_models", "xcode", "package_caches", "containers", "editors", "android"]
+          },
+          "findings": {
+            "description": "Its findings, each exactly as in the report's findings array (schema/lysosome.schema.json#/$defs/finding). Across all findings events these are the report's findings, so a client can show partial results while the scan runs.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "category", "kind", "path", "size_bytes", "tier", "status"]
+            }
           }
         }
       }
