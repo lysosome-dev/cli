@@ -22,6 +22,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 
 use crate::progress::Progress;
 
@@ -66,6 +67,21 @@ pub const SKIP_DIRS: &[&str] = &[
     ".cursor",
     ".Spotlight-V100",
 ];
+
+/// Folders the user asked to leave out (`--skip`), applied to every walk.
+static SKIP_PATHS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+
+/// Leave these exact folders out of every walk in this process: they are
+/// never listed or entered (so, on macOS, never trigger a privacy prompt).
+/// Paths are canonicalized when they exist. Set once, before walking;
+/// later calls are ignored.
+pub fn set_skip_paths(paths: &[PathBuf]) {
+    let paths = paths
+        .iter()
+        .map(|p| fs::canonicalize(p).unwrap_or_else(|_| p.clone()))
+        .collect();
+    let _ = SKIP_PATHS.set(paths);
+}
 
 /// Is `name` `.git` or in [`SKIP_DIRS`] (never descended by default)?
 pub fn is_skipped(name: &OsStr) -> bool {
@@ -136,6 +152,8 @@ pub struct WalkOptions {
     pub max_depth: usize,
     /// Directory names never descended into. `.git` is always skipped.
     pub skip_dirs: Vec<OsString>,
+    /// Exact folders never listed or entered (see [`set_skip_paths`]).
+    pub skip_paths: Vec<PathBuf>,
 }
 
 impl Default for WalkOptions {
@@ -143,6 +161,7 @@ impl Default for WalkOptions {
         WalkOptions {
             max_depth: 8,
             skip_dirs: SKIP_DIRS.iter().map(OsString::from).collect(),
+            skip_paths: SKIP_PATHS.get().cloned().unwrap_or_default(),
         }
     }
 }
@@ -202,7 +221,7 @@ where
         errors: AtomicU64::new(0),
     };
     rayon::scope(|s| {
-        for root in roots {
+        for root in roots.iter().filter(|r| !opts.skip_paths.contains(r)) {
             let ctx = &ctx;
             s.spawn(move |s| visit_dir(s, ctx, root, root.clone(), 0));
         }
@@ -245,6 +264,9 @@ fn visit_dir<'s, F>(
     for e in entries {
         if e.kind == EntryKind::Dir && !ctx.skip(&e.name) {
             let child = path.join(&e.name);
+            if ctx.opts.skip_paths.contains(&child) {
+                continue;
+            }
             scope.spawn(move |s| visit_dir(s, ctx, root, child, depth + 1));
         }
     }
@@ -309,6 +331,29 @@ mod tests {
         assert!(!rel.iter().any(|(p, _)| p.starts_with("repo/.git")));
         // symlinks are not followed
         assert!(!rel.iter().any(|(p, _)| p.starts_with("link")));
+    }
+
+    #[test]
+    fn skip_paths_are_never_entered_but_namesakes_are() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("Desktop/repo")).unwrap();
+        fs::create_dir_all(root.join("code/Desktop/repo")).unwrap();
+        let opts = WalkOptions {
+            skip_paths: vec![root.join("Desktop")],
+            ..WalkOptions::default()
+        };
+        let got: Vec<_> = collect(&root, &opts).into_iter().map(|(p, _)| p).collect();
+        // The skipped folder is neither visited nor listed into.
+        assert!(!got.iter().any(|p| p.starts_with(root.join("Desktop"))));
+        // Only that exact path: a folder with the same name elsewhere is walked.
+        assert!(got.contains(&root.join("code/Desktop/repo")));
+        // A root that is itself skipped isn't walked at all.
+        let skip_root = WalkOptions {
+            skip_paths: vec![root.clone()],
+            ..WalkOptions::default()
+        };
+        assert!(collect(&root, &skip_root).is_empty());
     }
 
     #[test]
