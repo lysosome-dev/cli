@@ -7,6 +7,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `--progress <auto|json|off>` (#38), a global flag. `json` writes
+  newline-delimited progress events to stderr (stdout keeps the report) for
+  GUIs and scripts: `phase_start` / throttled `advance` / `phase_finish`, a
+  `detector` event as each detector finishes, and `plan` plus one `item` event
+  per item during `clean --yes`. Described by `schema/progress.schema.json`.
+  `off` silences the spinner on a terminal; `auto` is today's behavior.
+- `clean --json` item results gain `trashed: [{original, location}]` (#38):
+  where each entry went inside the Trash. On macOS this is the real path
+  `NSFileManager` reports, including renamed duplicates such as
+  `target 21-08-03-944`. On Linux it comes from the freedesktop trash. Moving
+  `location` back to `original` undoes the move. The action log records the
+  same pairs. This is an additive schema change.
+
 ## [0.3.0] - 2026-10-10
 
 ### Added
