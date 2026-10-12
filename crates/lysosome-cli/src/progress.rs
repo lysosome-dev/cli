@@ -74,6 +74,17 @@ impl Reporter {
         }
     }
 
+    /// A `warning` event in JSON mode; otherwise a `warning:` line on stderr.
+    pub fn warn(reporter: Option<&Reporter>, p: &ui::Painter, msg: &str) {
+        match reporter.and_then(Reporter::json) {
+            Some(j) => j.warning(msg),
+            None => eprintln!(
+                "{} {msg}",
+                p.paint("warning:", owo_colors::Style::new().yellow().bold())
+            ),
+        }
+    }
+
     /// The JSON reporter, when that is what was asked for.
     pub fn json(&self) -> Option<&JsonProgress> {
         match self {
@@ -219,6 +230,12 @@ impl JsonProgress {
     /// A free-form status message (work without phases).
     pub fn message(&self, msg: &str) {
         self.emit("message", json!({ "message": msg }));
+    }
+
+    /// Something the user should know (a root that isn't a folder, a
+    /// detector that failed); the same text a terminal gets as `warning:`.
+    pub fn warning(&self, msg: &str) {
+        self.emit("warning", json!({ "message": msg }));
     }
 
     /// `clean`: the plan that is about to run.

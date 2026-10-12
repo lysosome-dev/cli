@@ -37,20 +37,21 @@ pub fn run(args: &WorktreesArgs, global: &GlobalArgs) -> Result<String> {
         .map(|r| shortener.short(r))
         .collect::<Vec<_>>()
         .join(", ");
-    let scan = match Reporter::new(global.progress, label) {
-        Some(reporter) => {
-            let res = worktree::scan(&opts, &reporter);
-            reporter.clear();
+    let reporter = Reporter::new(global.progress, label);
+    let scan = match &reporter {
+        Some(r) => {
+            let res = worktree::scan(&opts, r);
+            r.clear();
             res?
         }
         None => worktree::scan(&opts, &NoProgress)?,
     };
 
     for m in &scan.missing_roots {
-        eprintln!(
-            "{} skipping {} (not a folder)",
-            warn.paint("warning:", Style::new().yellow().bold()),
-            m.display()
+        Reporter::warn(
+            reporter.as_ref(),
+            &warn,
+            &format!("skipping {} (not a folder)", m.display()),
         );
     }
     if global.profile {

@@ -164,7 +164,6 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
     let shortener = PathShortener::new(Some(home.clone()));
     let sel = selection(args);
     let warn = Painter::new(ui::color_enabled(global.no_color, ui::stderr_is_tty()));
-    let wstyle = Style::new().yellow().bold();
 
     // --- scan ---------------------------------------------------------------
     let project_scopes =
@@ -222,18 +221,18 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
     }
     for r in &scan.runs {
         if let Some(e) = &r.error {
-            eprintln!(
-                "{} {} scan failed: {e:#}",
-                warn.paint("warning:", wstyle),
-                r.id
+            Reporter::warn(
+                spinner.as_ref(),
+                &warn,
+                &format!("{} scan failed: {e:#}", r.id),
             );
         }
     }
     for m in &scan.report.skipped.missing_roots {
-        eprintln!(
-            "{} skipping {} (not a folder)",
-            warn.paint("warning:", wstyle),
-            m.display()
+        Reporter::warn(
+            spinner.as_ref(),
+            &warn,
+            &format!("skipping {} (not a folder)", m.display()),
         );
     }
 
@@ -409,9 +408,10 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
         .iter()
         .any(|r| r.message.starts_with(clean::INTERRUPTED));
     if interrupted {
-        eprintln!(
-            "{} interrupted: stopped after the current item",
-            warn.paint("warning:", wstyle)
+        Reporter::warn(
+            spinner.as_ref(),
+            &warn,
+            "interrupted: stopped after the current item",
         );
     }
     let failed = interrupted || results.iter().any(|r| r.outcome == Outcome::Failed);

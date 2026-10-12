@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/lysosome-dev/cli/schema/progress.schema.json",
   "title": "lysosome progress event",
-  "description": "One line of `--progress json` output: newline-delimited JSON on stderr (stdout keeps the report). Every line is one event object. Consumers must ignore unknown events and properties; events are only added within a major version. `advance` events are throttled (at most about 10 per second per phase) and a phase's final count is always sent before its `phase_finish`. Phases can overlap and some phases end without a `phase_finish`, so treat the most recent `phase_start` as the current one.",
+  "description": "One line of `--progress json` output: newline-delimited JSON on stderr (stdout keeps the report). Every line is one event object; warnings arrive as `warning` events. Other output that is not an event (`--profile` timings, a crash) can still reach stderr, so skip lines that are not JSON objects. Consumers must ignore unknown events and properties; events are only added within a major version. `advance` events are throttled (at most about 10 per second per phase) and a phase's final count is always sent before its `phase_finish`. Phases can overlap and some phases end without a `phase_finish`, so treat the most recent `phase_start` as the current one.",
   "type": "object",
   "required": ["type", "event", "elapsed_ms"],
   "properties": {
@@ -10,7 +10,16 @@
       "const": "progress"
     },
     "event": {
-      "enum": ["phase_start", "advance", "phase_finish", "detector", "message", "plan", "item"]
+      "enum": [
+        "phase_start",
+        "advance",
+        "phase_finish",
+        "detector",
+        "message",
+        "warning",
+        "plan",
+        "item"
+      ]
     },
     "elapsed_ms": {
       "description": "Milliseconds since the command started.",
@@ -132,7 +141,7 @@
       "if": {
         "properties": {
           "event": {
-            "const": "message"
+            "enum": ["message", "warning"]
           }
         }
       },

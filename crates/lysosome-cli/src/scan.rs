@@ -54,9 +54,10 @@ pub fn run(cmd: &ScanCmdArgs, global: &GlobalArgs) -> Result<String> {
     // home they would look relative to the current directory.
     let system = !cmd.no_system && home.is_some();
     if !cmd.no_system && home.is_none() {
-        eprintln!(
-            "{} home folder unknown; skipping caches, AI models, Docker and Xcode",
-            warn.paint("warning:", Style::new().yellow().bold())
+        Reporter::warn(
+            spinner.as_ref(),
+            &warn,
+            "home folder unknown; skipping caches, AI models, Docker and Xcode",
         );
     }
     let detectors = if system {
@@ -79,17 +80,20 @@ pub fn run(cmd: &ScanCmdArgs, global: &GlobalArgs) -> Result<String> {
             )
         }));
     }
-    let w = Style::new().yellow().bold();
     for r in &run.runs {
         if let Some(e) = &r.error {
-            eprintln!("{} {} scan failed: {e:#}", warn.paint("warning:", w), r.id);
+            Reporter::warn(
+                spinner.as_ref(),
+                &warn,
+                &format!("{} scan failed: {e:#}", r.id),
+            );
         }
     }
     for m in &run.report.skipped.missing_roots {
-        eprintln!(
-            "{} skipping {} (not a folder)",
-            warn.paint("warning:", w),
-            m.display()
+        Reporter::warn(
+            spinner.as_ref(),
+            &warn,
+            &format!("skipping {} (not a folder)", m.display()),
         );
     }
     if global.profile {

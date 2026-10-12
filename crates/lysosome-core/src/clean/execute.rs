@@ -86,10 +86,19 @@ fn macos_trash(path: &str) -> Result<Option<PathBuf>, String> {
 /// original path it is (`<trash>/files/<name>`, next to `info/<name>.trashinfo`).
 #[cfg(all(unix, not(target_os = "macos")))]
 fn freedesktop_location(original: &Path) -> Option<PathBuf> {
+    // The trash records the canonical parent (symlinks resolved), so match
+    // on that: `/home -> /var/home` must still find the entry.
+    let parent = original.parent()?;
+    let canonical = fs::canonicalize(parent)
+        .unwrap_or_else(|_| parent.to_path_buf())
+        .join(original.file_name()?);
     let items = trash::os_limited::list().ok()?;
     let item = items
         .into_iter()
-        .filter(|i| i.original_path() == original)
+        .filter(|i| {
+            let p = i.original_path();
+            p == canonical || p == original
+        })
         .max_by_key(|i| i.time_deleted)?;
     let info = PathBuf::from(&item.id);
     let name = info.file_stem()?.to_owned();

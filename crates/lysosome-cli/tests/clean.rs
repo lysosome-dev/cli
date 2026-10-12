@@ -1203,3 +1203,28 @@ fn scan_progress_json_keeps_stdout_clean_and_reports_phases_and_detectors() {
         );
     }
 }
+
+#[test]
+fn warnings_are_events_in_json_progress_mode() {
+    let fx = Fixture::new("make_worktrees.sh");
+    let missing = fx.s("no-such-folder");
+    let out = fx.ok(&[
+        "scan",
+        &fx.s("."),
+        &missing,
+        "--no-system",
+        "--no-gh",
+        "--json",
+        "--progress",
+        "json",
+    ]);
+    let events = progress_events(&out.stderr);
+    assert!(
+        events
+            .iter()
+            .any(|e| e["event"] == "warning"
+                && e["message"].as_str().unwrap().contains("not a folder")),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
