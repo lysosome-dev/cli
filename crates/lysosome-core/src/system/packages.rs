@@ -207,13 +207,37 @@ fn bun(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
         .map(|p| item("bun-cache", p, "Bun cache").command(["bun", "pm", "cache", "rm"])))
 }
 
+/// pip's cache, from pip's own settings. Never runs `pip cache dir`: that
+/// starts the user's Python, whose startup lists every `sys.path` folder,
+/// including editable installs' source folders (often under ~/Documents).
+/// On macOS that pops a privacy prompt for the scanning app.
 fn pip(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
     let h = &ctx.home;
-    let mut fallbacks = Vec::new();
-    fallbacks.extend(env.var_path("PIP_CACHE_DIR"));
-    fallbacks.push(os_cache(env, h, "pip", "pip"));
-    one(resolve(&env.tools(h), "pip", &["cache", "dir"], fallbacks)
-        .map(|p| item("pip-cache", p, "pip cache").command(["pip", "cache", "purge"])))
+    let mut c = Vec::new();
+    c.extend(env.var_path("PIP_CACHE_DIR"));
+    c.extend(pip_config_cache_dir(env, h));
+    c.push(os_cache(env, h, "pip", "pip"));
+    one(first_dir(c).map(|p| item("pip-cache", p, "pip cache").command(["pip", "cache", "purge"])))
+}
+
+/// The last `cache-dir` in pip's config files, in pip's load order (global,
+/// user: legacy, XDG, macOS; then `PIP_CONFIG_FILE`), so later files win.
+fn pip_config_cache_dir(env: &SystemEnv, home: &Path) -> Option<PathBuf> {
+    let xdg_config = env
+        .var_path("XDG_CONFIG_HOME")
+        .unwrap_or_else(|| home.join(".config"));
+    let mut files = vec![
+        PathBuf::from("/etc/pip.conf"),
+        PathBuf::from("/Library/Application Support/pip/pip.conf"),
+        home.join(".pip/pip.conf"),
+        xdg_config.join("pip/pip.conf"),
+        home.join("Library/Application Support/pip/pip.conf"),
+    ];
+    files.extend(env.var_path("PIP_CONFIG_FILE"));
+    files
+        .iter()
+        .filter_map(|f| rc_path(f, "cache-dir", home).or_else(|| rc_path(f, "cache_dir", home)))
+        .next_back()
 }
 
 fn uv(env: &SystemEnv, ctx: &ScanContext<'_>) -> Vec<Finding> {
@@ -412,6 +436,35 @@ mod tests {
             [h.join(".cargo/registry")]
         );
         assert!(by_kind(&all, "pip-cache").is_empty());
+    }
+
+    #[test]
+    fn pip_cache_comes_from_settings_and_pip_never_runs() {
+        let t = tempfile::tempdir().unwrap();
+        let h = t.path().canonicalize().unwrap();
+        // A `pip` that would leave a mark if it were ever run.
+        let marker = h.join("pip-ran");
+        exe(
+            &h.join("bin/pip"),
+            &format!("#!/bin/sh\ntouch {}\necho /nope\n", marker.display()),
+        );
+        let custom = h.join("custom-pip");
+        write(&custom.join("blob"), 20_000);
+        // An older (legacy) user config is overridden by the XDG one.
+        write(&h.join(".pip/pip.conf"), 0);
+        std::fs::write(h.join(".pip/pip.conf"), "[global]\ncache-dir = /old\n").unwrap();
+        std::fs::create_dir_all(h.join(".config/pip")).unwrap();
+        std::fs::write(
+            h.join(".config/pip/pip.conf"),
+            "[global]\ntimeout = 60\ncache-dir = ~/custom-pip\n",
+        )
+        .unwrap();
+        let env = SystemEnv::isolated([("PATH", h.join("bin"))]);
+        assert_eq!(pip_config_cache_dir(&env, &h), Some(custom.clone()));
+        let found = pip(&env, &ctx(&h));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path, custom);
+        assert!(!marker.exists(), "pip must not be run to find its cache");
     }
 
     fn exe(path: &Path, body: &str) {

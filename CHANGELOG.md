@@ -7,6 +7,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The pip cache is found from pip's settings (`PIP_CACHE_DIR`, `cache-dir`
+  in pip's config files, else the platform default) instead of running
+  `pip cache dir` (#46). Running pip started the user's Python, whose startup
+  lists editable installs' source folders, often in ~/Documents, which on
+  macOS triggered a privacy prompt for the app running the scan. Scans are
+  faster too.
+
 ### Added
 
 - `--skip <PATH>` (#44), a global, repeatable option: leave that exact
