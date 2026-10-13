@@ -7,6 +7,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-12
+
 ### Fixed
 
 - The pip cache is found from pip's settings (`PIP_CACHE_DIR`, `cache-dir`
@@ -188,7 +190,8 @@ First release.
   and a Homebrew tap (`brew install lysosome-dev/tap/lysosome`). Archives
   include man pages and shell completions.
 
-[Unreleased]: https://github.com/lysosome-dev/cli/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/lysosome-dev/cli/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/lysosome-dev/cli/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/lysosome-dev/cli/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/lysosome-dev/cli/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/lysosome-dev/cli/compare/v0.1.0...v0.2.0
