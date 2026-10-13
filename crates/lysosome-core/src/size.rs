@@ -224,6 +224,21 @@ impl Sizer {
                 return 0;
             }
         };
+        self.dir_listing(path, listing, depth, splitting, decide, parts)
+    }
+
+    fn dir_listing<F>(
+        &self,
+        path: &Path,
+        listing: Listing,
+        depth: usize,
+        splitting: bool,
+        decide: &F,
+        parts: &Mutex<Vec<(PathBuf, u64)>>,
+    ) -> u64
+    where
+        F: Fn(&Path, &OsStr, usize) -> Split + Sync,
+    {
         if listing.dev != self.dev {
             return 0; // another filesystem (mount point): not ours to count
         }
@@ -256,11 +271,12 @@ impl Sizer {
                     continue;
                 }
                 subdirs.push((path.join(&c.name), split, c.own));
-            } else if c.dev == self.dev {
+            } else {
+                // Regular files are always counted when listed here. Mount
+                // boundaries are directories (`mount_point` / listing.dev);
+                // overlayfs reports a different st_dev on files than on dirs.
                 total += self.account(c.bytes, c.dev, c.ino, c.nlink);
             }
-            // (A file on another device means we are inside a filesystem
-            // mounted where the parent's listing didn't say so: not ours.)
         }
         let recurse = |(p, split, own): &Subdir| match split {
             Split::Inline => self.dir(p, *own, depth + 1, true, decide, parts),
@@ -638,6 +654,67 @@ mod tests {
         // The other order credits the other tree.
         let linked = attribute_links([&lb, &la]);
         assert!(linked[0] >= 50_000 && linked[1] == 0);
+    }
+
+    /// overlayfs (common in containers) gives regular files a different
+    /// `st_dev` than their parent directory. Sizes must still include them.
+    #[test]
+    fn counts_regular_files_when_st_dev_differs_from_root() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path();
+        write_file(&root.join("big"), 1 << 20);
+        let s = Sizer::new(root).unwrap();
+        let root_dev = s.dev;
+        let mut listing = portable_list(root, None).unwrap();
+        assert_eq!(listing.dev, root_dev);
+        for c in &mut listing.children {
+            if !c.is_dir {
+                c.dev = root_dev.wrapping_add(1);
+            }
+        }
+        let parts = Mutex::new(Vec::new());
+        let total = s.dir_listing(
+            root,
+            listing,
+            0,
+            false,
+            &|_, _, _| Split::InlineNoSplit,
+            &parts,
+        );
+        assert!(
+            total >= 1 << 20,
+            "under-counted with overlay-like st_dev mismatch: {total}"
+        );
+    }
+
+    #[test]
+    fn still_skips_mount_point_directories() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path();
+        fs::create_dir_all(root.join("mounted")).unwrap();
+        write_file(&root.join("mounted/secret"), 1 << 20);
+        let s = Sizer::new(root).unwrap();
+        let root_dev = s.dev;
+        let mut listing = portable_list(root, None).unwrap();
+        for c in &mut listing.children {
+            if c.is_dir && c.name == "mounted" {
+                c.mount_point = true;
+                c.dev = root_dev.wrapping_add(1);
+            }
+        }
+        let parts = Mutex::new(Vec::new());
+        let total = s.dir_listing(
+            root,
+            listing,
+            0,
+            false,
+            &|_, _, _| Split::InlineNoSplit,
+            &parts,
+        );
+        assert!(
+            total < 1 << 19,
+            "should not count files under a mount point: {total}"
+        );
     }
 
     #[test]
