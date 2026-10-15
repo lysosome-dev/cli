@@ -106,7 +106,13 @@ pub fn run(cmd: &ScanCmdArgs, global: &GlobalArgs) -> Result<String> {
         return Ok(s);
     }
     let p = Painter::new(ui::color_enabled(global.no_color, ui::stdout_is_tty()));
-    Ok(render(&run, args, &p, &shortener))
+    let mut out = render(&run, args, &p, &shortener);
+    // Only worth a mention when there is something to reclaim.
+    if run.report.summary.reclaimable_bytes > 0 && crate::hint::enabled_now(false, global.progress)
+    {
+        out.push_str(&crate::hint::line(&p));
+    }
+    Ok(out)
 }
 
 fn render_profile(run: &ScanRun, p: &Painter) -> String {

@@ -7,17 +7,45 @@
   </a>
 </h1>
 
+**Find and safely reclaim the disk your dev tools and coding agents leave behind.**
+
 [![CI](https://github.com/lysosome-dev/cli/actions/workflows/ci.yml/badge.svg)](https://github.com/lysosome-dev/cli/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/lysosome.svg)](https://crates.io/crates/lysosome)
 [![Release](https://img.shields.io/github/v/release/lysosome-dev/cli?sort=semver)](https://github.com/lysosome-dev/cli/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**The disk cleaner for the agentic coding era.**
+```bash
+brew install lysosome-dev/tap/lysosome            # macOS / Linux, with man pages and completions
+cargo install --locked lysosome                   # from crates.io
+curl -fsSL https://lysosome.dev/install.sh | sh   # prebuilt binary into ~/.local/bin
+```
+
+```text
+$ lysosome scan ~/code
+  81 projects untouched for 30+ days are holding 49.4 GB of dependencies and build output.
+
+    53.2 GB  reclaimable now         REMOVABLE items in every section
+     5.7 GB  regenerable             cheap to rebuild (build output, caches, merged worktrees)
+    47.5 GB  regenerable_expensive   costly to get back (dependencies to re-download)
+    13.2 GB  review                  a human should look first
+
+  ── Git worktrees  17.0 GB idle in 55 items of 105
+
+  STATUS        SIZE  ARTIFACTS  IDLE  BRANCH                  PATH
+  REMOVABLE   3.1 GB     3.0 GB   89d  feat/cost-analytics     ~/code/app-worktrees/marinating-stream
+  REVIEW      2.4 GB     2.3 GB   95d  feat/stream-json        ~/code/app-wt-pr2
+             └ 8 unpushed commits, not merged
+  …
+  Scanned 22,055 folders under ~/code in 34.9s. Nothing was changed.
+
+$ lysosome clean --yes
+  …
+  Reclaimed 5.7 GB (61 items)
+```
 
 Claude Code, Cursor and parallel agents create git worktrees constantly, and nothing cleans them up. Each dormant worktree drags its own `node_modules`, `target` or `.venv`. Add build artifacts, package caches, local AI models, Docker and Xcode data, and your SSD fills up fast.
 
 `lysosome` shows you where the disk went, labels every item by how safe it is to delete, and cleans it up safely: dry run by default, the Trash by default, and every item re-checked right before it's touched.
-
-> 🚧 Under active development. `lysosome scan` (idle project artifacts, dormant worktrees, plus everything `lysosome caches` finds: package caches, AI models, Docker, Xcode) and `lysosome clean` are here. See [docs/SPEC.md](docs/SPEC.md).
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/scan-dark.svg"><img src="docs/assets/scan-light.svg" alt="lysosome scan: reclaimable space by safety tier, then dormant worktrees labeled REMOVABLE or REVIEW (example output)" width="860"></picture></p>
 
@@ -27,8 +55,15 @@ Claude Code, Cursor and parallel agents create git worktrees constantly, and not
 - **One scan, the whole machine.** Idle `node_modules` / `target` / `.venv`, package caches, local AI models (Ollama, Hugging Face, LM Studio), Docker, Xcode and simulators, with sizes measured like `du`.
 - **Safe by construction.** Scans are read-only, cleanup is a dry run until you confirm (`--yes` or the prompt), files go to the Trash, every item is re-checked right before it's touched, and anything uncertain is labelled `REVIEW` and never removed.
 - **Scriptable.** A versioned `--json` contract for dashboards, CI and agents.
+- **Private.** No telemetry, no network code of its own (see the [FAQ](#faq)).
 
-**Mac app (coming soon):** lysosome for the Mac, built on the same engine. [Join the waitlist at lysosome.dev](https://lysosome.dev).
+## Desktop app (free beta)
+
+Prefer a window to a terminal? The lysosome desktop app for macOS and Linux puts the same engine in your menu bar: a disk gauge, dormant worktrees grouped by the agent that made them, and one-click cleanup with Undo. It drives this CLI under the hood, so every [safety rule](#safety-rules) below still applies.
+
+Download it free during the beta at **[lysosome.dev](https://lysosome.dev)**: [macOS (Apple silicon)](https://lysosome.dev/download/mac) · [macOS (Intel)](https://lysosome.dev/download/mac-intel) · [Linux .deb](https://lysosome.dev/download/linux-deb) · [Linux AppImage](https://lysosome.dev/download/linux-appimage) (x86_64).
+
+After a `scan` or `clean` on a terminal, the CLI mentions the app in one dim line. It never appears in `--json`, `--progress json` or piped output; set `LYSOSOME_NO_HINTS=1` to hide it everywhere.
 
 ## Install
 
@@ -409,6 +444,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 - `tests/fixtures/make_projects.sh`: old and fresh repos with ignored and tracked artifact folders, symlinks and worktrees for `lysosome scan`.
 - New scanners implement `lysosome_core::detector::Detector` and are registered in `lysosome_core::detectors::all_detectors()`; `scan` renders any category without CLI changes.
 - `reference/wtscan.py`: the Python prototype the Rust port must agree with.
+- [docs/SPEC.md](docs/SPEC.md): the product spec, milestones and safety rules.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and how releases are cut, [SECURITY.md](SECURITY.md) to report a vulnerability, and [CHANGELOG.md](CHANGELOG.md) for what changed.
 
