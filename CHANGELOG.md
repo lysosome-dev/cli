@@ -7,6 +7,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-15
+
+### Fixed
+
+- Sizes on overlay filesystems (Docker containers, many CI runners) count
+  file contents again (#36). Overlayfs can give files a different device
+  number than their folder, and the scan skipped those files, so a 40 MB
+  `node_modules` showed as 0 bytes. Folders mounted from another filesystem
+  are still left out.
+
 ### Added
 
 - After a human-readable `scan` that found something reclaimable, or a
@@ -204,7 +214,8 @@ First release.
   and a Homebrew tap (`brew install lysosome-dev/tap/lysosome`). Archives
   include man pages and shell completions.
 
-[Unreleased]: https://github.com/lysosome-dev/cli/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/lysosome-dev/cli/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/lysosome-dev/cli/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/lysosome-dev/cli/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/lysosome-dev/cli/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/lysosome-dev/cli/compare/v0.2.0...v0.2.1
