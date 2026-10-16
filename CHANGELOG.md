@@ -7,6 +7,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- After a human-readable `scan` that found something reclaimable, or a
+  `clean --yes` that freed space, one dim line mentions the free desktop app
+  beta (https://lysosome.dev). It is shown only when stdout is a terminal,
+  never with `--json` or `--progress json`, and `LYSOSOME_NO_HINTS=1` hides
+  it. The JSON output is unchanged.
+
+### Changed
+
+- README: install options and an example run up top, and a "Desktop app
+  (free beta)" section in place of the old waitlist line. More precise
+  crates.io keywords.
+
 ## [0.4.0] - 2026-10-12
 
 ### Fixed

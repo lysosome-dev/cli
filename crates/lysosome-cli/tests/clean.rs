@@ -802,6 +802,16 @@ fn help_documents_the_safety_defaults() {
 /// `(wait_for_text, keys_to_send)`; returns everything the terminal showed.
 /// `None` when python3 isn't available.
 fn run_in_pty(fx: &Fixture, args: &[&str], steps: &[(&str, &str)]) -> Option<(i32, String)> {
+    run_in_pty_env(fx, args, steps, &[])
+}
+
+/// [`run_in_pty`] with extra environment variables.
+fn run_in_pty_env(
+    fx: &Fixture,
+    args: &[&str],
+    steps: &[(&str, &str)],
+    env: &[(&str, &str)],
+) -> Option<(i32, String)> {
     const DRIVER: &str = r#"
 import fcntl, json, os, pty, select, struct, sys, termios, time
 steps = json.loads(sys.argv[1]); argv = sys.argv[2:]
@@ -872,6 +882,9 @@ sys.exit(os.waitstatus_to_exitcode(status))
             None => cmd.env_remove(k),
         };
     }
+    // The app hint is opt-out; never inherit the developer's opt-out.
+    cmd.env_remove("LYSOSOME_NO_HINTS");
+    cmd.envs(env.iter().copied());
     cmd.env("TERM", "xterm-256color").current_dir(&fx.dest);
     let out = cmd.output().unwrap();
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -1269,4 +1282,67 @@ fn findings_events_stream_exactly_the_reports_findings() {
             .iter()
             .any(|d| d["event"] == "detector" && d["id"] == e["id"]));
     }
+}
+
+const APP_HINT: &str = "lysosome desktop app";
+
+#[test]
+fn app_hint_only_on_a_terminal_and_can_be_turned_off() {
+    let fx = Fixture::new("make_worktrees.sh");
+    let code = fx.s("code");
+    let scan = ["scan", code.as_str(), "--no-system", "--no-gh"];
+
+    // Piped (not a terminal) and JSON output never carry the hint.
+    let out = fx.ok(&scan);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Nothing was changed."), "{text}");
+    assert!(!text.contains(APP_HINT), "piped scan:\n{text}");
+    let mut json = scan.to_vec();
+    json.extend(["--json", "--progress", "json"]);
+    let out = fx.ok(&json);
+    assert!(!String::from_utf8_lossy(&out.stdout).contains(APP_HINT));
+    assert!(!String::from_utf8_lossy(&out.stderr).contains(APP_HINT));
+
+    // On a terminal: one dim line after the scan summary.
+    let Some((status, text)) = run_in_pty(&fx, &scan, &[]) else {
+        eprintln!("python3 not available; skipping the pty test");
+        return;
+    };
+    assert_eq!(status, 0, "{text}");
+    assert_eq!(text.matches(APP_HINT).count(), 1, "{text}");
+    assert!(text.contains("https://lysosome.dev"), "{text}");
+
+    // LYSOSOME_NO_HINTS=1 and --progress json switch it off on a terminal too.
+    let (status, text) = run_in_pty_env(&fx, &scan, &[], &[("LYSOSOME_NO_HINTS", "1")]).unwrap();
+    assert_eq!(status, 0, "{text}");
+    assert!(text.contains("Nothing was changed."), "{text}");
+    assert!(!text.contains(APP_HINT), "{text}");
+    let mut events = scan.to_vec();
+    events.extend(["--progress", "json"]);
+    let (status, text) = run_in_pty(&fx, &events, &[]).unwrap();
+    assert_eq!(status, 0, "{text}");
+    assert!(!text.contains(APP_HINT), "{text}");
+
+    // A dry run never shows it; a clean that freed space does.
+    let dry = ["clean", code.as_str(), "--worktrees", "--no-gh"];
+    let out = fx.ok(&dry);
+    assert!(!String::from_utf8_lossy(&out.stdout).contains(APP_HINT));
+    let (status, text) = run_in_pty(
+        &fx,
+        &["clean", code.as_str(), "--worktrees", "--no-gh", "--yes"],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(status, 0, "{text}");
+    assert!(text.contains("Reclaimed"), "{text}");
+    assert_eq!(text.matches(APP_HINT).count(), 1, "{text}");
+}
+
+#[test]
+fn piped_clean_yes_has_no_app_hint() {
+    let fx = Fixture::new("make_worktrees.sh");
+    let out = fx.ok(&["clean", &fx.s("code"), "--worktrees", "--no-gh", "--yes"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Reclaimed"), "{text}");
+    assert!(!text.contains(APP_HINT), "{text}");
 }

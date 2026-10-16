@@ -4,6 +4,7 @@ mod caches;
 mod clean;
 mod completions;
 mod errors;
+mod hint;
 mod pick;
 mod progress;
 mod scan;
@@ -48,7 +49,10 @@ Examples:
   lysosome clean -i                        Pick what to clean, then confirm
   lysosome clean --yes                     Clean REMOVABLE, cheap-to-rebuild items
   lysosome scan --days 90                  Call anything idle 90+ days dormant
-  lysosome scan --json | jq .summary       Machine-readable output";
+  lysosome scan --json | jq .summary       Machine-readable output
+
+After `scan` and `clean` on a terminal, one dim line mentions the desktop app;
+set LYSOSOME_NO_HINTS=1 to hide it. It never appears in JSON or piped output.";
 
 const SCAN_HELP: &str = "\
 Sections:

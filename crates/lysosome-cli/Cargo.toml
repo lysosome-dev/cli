@@ -10,7 +10,7 @@ authors.workspace = true
 rust-version.workspace = true
 documentation = "https://github.com/lysosome-dev/cli#readme"
 readme = "../../README.md"
-keywords = ["disk-cleanup", "git-worktree", "cache", "disk-usage", "cli"]
+keywords = ["disk-cleanup", "git-worktree", "node-modules", "disk-usage", "cache"]
 categories = ["command-line-utilities", "filesystem", "development-tools"]
 # Tests need the repo's tests/fixtures/ and schema/, so they stay out of the
 # published crate. build.rs embeds the commit for `--version`

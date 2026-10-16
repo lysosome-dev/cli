@@ -428,14 +428,19 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
             Some(&log_path),
         )?
     } else {
-        render_summary(
+        let mut text = render_summary(
             &plan,
             &results,
             dir_trash.as_ref().map(|_| ()),
             &log_path,
             &p,
             &shortener,
-        )
+        );
+        let freed: u64 = results.iter().map(|r| r.freed_bytes).sum();
+        if !failed && freed > 0 && crate::hint::enabled_now(false, global.progress) {
+            text.push_str(&crate::hint::line(&p));
+        }
+        text
     };
     Ok(CleanOutput { text, failed })
 }
