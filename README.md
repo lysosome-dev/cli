@@ -336,6 +336,38 @@ On Claude Code older than 2.1.275, run `/plugin marketplace add lysosome-dev/cli
 
   Nothing happens on `/clear` or `/resume`, which keep the session going in the same folder. Nothing happens either while any process still works in that folder (your terminal, another session, a dev server); the plugin waits for the session to exit, then checks. Every cleanup is `lysosome clean`, so the [safety rules](#safety-rules) still decide: dirty, untracked, locked or unpushed worktrees are never touched. Cleanups the plugin runs are written to the action log with `"actor": "claude-code"`.
 
+## MCP server: any agent can scan and clean safely
+
+`lysosome mcp` serves lysosome to AI agents over the [Model Context Protocol](https://modelcontextprotocol.io) on stdio, so Cursor, Codex, Claude Code, Windsurf and other MCP clients can call it directly.
+
+```text
+claude mcp add lysosome -- lysosome mcp        # Claude Code
+codex mcp add lysosome -- lysosome mcp         # Codex
+```
+
+Cursor (`.cursor/mcp.json` or `~/.cursor/mcp.json`) and most other clients take the same JSON:
+
+```json
+{ "mcpServers": { "lysosome": { "command": "lysosome", "args": ["mcp"] } } }
+```
+
+For Codex you can also add this to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.lysosome]
+command = "lysosome"
+args = ["mcp"]
+```
+
+| Tool | What it does |
+|---|---|
+| `scan` | Same as `lysosome scan --json`: idle project artifacts, dormant worktrees and machine-wide data. Read-only |
+| `worktrees` | Same as `lysosome worktrees --json`. Read-only |
+| `caches` | Same as `lysosome caches --json`, optionally limited to some categories. Read-only |
+| `clean` | Same as `lysosome clean --json`. A dry run that returns the plan, unless the call confirms |
+
+Results are the [versioned JSON](#json-output) the CLI prints. `clean` only acts when the call passes `confirm: true` together with the exact item ids (from a scan or a dry run) in `only`; globs are refused when confirming. Every [safety rule](#safety-rules) still applies: each item is re-checked right before acting, files go to the Trash, and REVIEW items are never cleaned. `--permanent` and `--interactive` aren't reachable through MCP, and unknown arguments are refused. Cleanups are written to the action log with `"actor": "mcp"` unless `LYSOSOME_ACTOR` is set. Pass `roots` to keep scans fast. To leave folders out of every call, start the server with `lysosome mcp --skip <PATH>`.
+
 ## JSON output
 
 `--json` prints a stable, versioned document (described by [`schema/lysosome.schema.json`](schema/lysosome.schema.json), JSON Schema 2020-12). Only additive changes happen within a `schema_version`. `lysosome clean --json` prints the plan, and with `--yes` each item's result, described by [`schema/clean.schema.json`](schema/clean.schema.json). If a command run with `--json` fails, stdout gets `{"error": {"code", "message", "hint"}}` instead (exit status 1, or 2 for a command-line mistake), described by [`schema/error.schema.json`](schema/error.schema.json). Without `--json`, every error comes with a `hint:` line saying how to fix it.
