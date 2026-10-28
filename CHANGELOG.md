@@ -7,6 +7,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `lysosome mcp`: a Model Context Protocol server on stdio, so Cursor, Codex,
+  Claude Code and other agents can call `scan`, `worktrees`, `caches` and
+  `clean` (#57). Results are the same versioned JSON as `--json`. `clean` is
+  a dry run unless the call passes `confirm: true` with exact item ids;
+  `--permanent` isn't reachable, and cleanups are logged with actor `mcp`.
+
 ## [0.4.1] - 2026-10-15
 
 ### Fixed

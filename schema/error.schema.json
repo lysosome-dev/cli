@@ -13,7 +13,7 @@
       "required": ["code", "message", "hint"],
       "properties": {
         "code": {
-          "description": "Stable machine-readable reason. Known values: usage, no_valid_roots, no_home_dir, git_unavailable, thread_pool, io, needs_yes, needs_terminal, all_detectors_failed, action_log, picker, internal. New codes may be added within a schema_version.",
+          "description": "Stable machine-readable reason. Known values: usage, no_valid_roots, no_home_dir, git_unavailable, thread_pool, io, needs_yes, needs_terminal, all_detectors_failed, action_log, picker, not_planned, internal. New codes may be added within a schema_version.",
           "type": "string",
           "minLength": 1
         },

@@ -5,6 +5,7 @@ mod clean;
 mod completions;
 mod errors;
 mod hint;
+mod mcp;
 mod pick;
 mod progress;
 mod scan;
@@ -154,6 +155,22 @@ Examples:
 Tools are only asked where their data lives (with timeouts); Docker is only
 queried if it's already running. Nothing is ever changed.";
 
+const MCP_HELP: &str = "\
+Speaks the Model Context Protocol on stdin/stdout, for Claude Code, Cursor,
+Codex and other agents. Tools: scan, worktrees and caches (read-only) and
+clean. clean is a dry run unless the agent passes confirm: true with the
+exact item ids to clean; files go to the Trash, every item is re-checked,
+REVIEW items are never touched, and --permanent is not available. Cleanups
+are logged with actor \"mcp\" unless LYSOSOME_ACTOR is set.
+
+Setup:
+  claude mcp add lysosome -- lysosome mcp          Claude Code
+  {\"mcpServers\": {\"lysosome\": {\"command\": \"lysosome\", \"args\": [\"mcp\"]}}}
+                                                   Cursor (.cursor/mcp.json)
+  codex mcp add lysosome -- lysosome mcp           Codex
+
+--skip applies to every call: lysosome mcp --skip ~/big-archive";
+
 #[derive(Debug, Parser)]
 #[command(
     name = "lysosome",
@@ -220,6 +237,10 @@ enum Command {
     /// Print a shell completion script (bash, zsh, fish, powershell, elvish)
     #[command(after_help = completions::COMPLETIONS_HELP)]
     Completions(completions::CompletionsArgs),
+
+    /// Serve scan, worktrees, caches and clean to AI agents over MCP (stdio)
+    #[command(after_help = MCP_HELP)]
+    Mcp(mcp::McpArgs),
 }
 
 /// `lysosome worktrees` takes the same options as `lysosome scan`.
@@ -295,7 +316,9 @@ fn main() -> ExitCode {
         Ok(c) => c,
         Err(e) => return usage_error(e),
     };
-    lysosome_core::walk::set_skip_paths(&cli.global.skip);
+    // `~` too, for callers without a shell (MCP client configs).
+    let skip: Vec<PathBuf> = cli.global.skip.iter().map(|p| expand_tilde(p)).collect();
+    lysosome_core::walk::set_skip_paths(&skip);
     let json = cli.command.as_ref().is_some_and(Command::json);
     let mut failed = false;
     let result = match &cli.command {
@@ -310,6 +333,7 @@ fn main() -> ExitCode {
         Some(Command::Worktrees(args)) => worktrees::run(args, &cli.global),
         Some(Command::Caches(args)) => caches::run(args, &cli.global),
         Some(Command::Completions(args)) => completions::completions(Cli::command(), args),
+        Some(Command::Mcp(_)) => return mcp::serve(),
         Some(Command::Clean(args)) => match clean::run(args, &cli.global) {
             Ok(out) => {
                 failed = out.failed;
@@ -375,8 +399,17 @@ impl Command {
             Command::Worktrees(a) => a.json,
             Command::Caches(a) => a.json,
             Command::Clean(a) => a.json,
-            Command::Completions(_) => false,
+            Command::Completions(_) | Command::Mcp(_) => false,
         }
+    }
+}
+
+/// `~` or `~/...` → the home folder; anything else unchanged.
+fn expand_tilde(p: &std::path::Path) -> PathBuf {
+    match (p.strip_prefix("~"), dirs::home_dir()) {
+        (Ok(rest), Some(home)) if rest.as_os_str().is_empty() => home,
+        (Ok(rest), Some(home)) => home.join(rest),
+        _ => p.to_path_buf(),
     }
 }
 
