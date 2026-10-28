@@ -316,7 +316,9 @@ fn main() -> ExitCode {
         Ok(c) => c,
         Err(e) => return usage_error(e),
     };
-    lysosome_core::walk::set_skip_paths(&cli.global.skip);
+    // `~` too, for callers without a shell (MCP client configs).
+    let skip: Vec<PathBuf> = cli.global.skip.iter().map(|p| expand_tilde(p)).collect();
+    lysosome_core::walk::set_skip_paths(&skip);
     let json = cli.command.as_ref().is_some_and(Command::json);
     let mut failed = false;
     let result = match &cli.command {
@@ -399,6 +401,15 @@ impl Command {
             Command::Clean(a) => a.json,
             Command::Completions(_) | Command::Mcp(_) => false,
         }
+    }
+}
+
+/// `~` or `~/...` → the home folder; anything else unchanged.
+fn expand_tilde(p: &std::path::Path) -> PathBuf {
+    match (p.strip_prefix("~"), dirs::home_dir()) {
+        (Ok(rest), Some(home)) if rest.as_os_str().is_empty() => home,
+        (Ok(rest), Some(home)) => home.join(rest),
+        _ => p.to_path_buf(),
     }
 }
 

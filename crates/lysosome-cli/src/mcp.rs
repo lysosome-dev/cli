@@ -38,10 +38,22 @@ pub fn serve() -> ExitCode {
     if std::env::var_os("LYSOSOME_ACTOR").is_none() {
         std::env::set_var("LYSOSOME_ACTOR", "mcp");
     }
-    let stdin = std::io::stdin();
+    let mut stdin = std::io::stdin().lock();
     let mut stdout = std::io::stdout().lock();
-    for line in stdin.lock().lines() {
-        let Ok(line) = line else { break };
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match stdin.read_until(b'\n', &mut buf) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => {
+                eprintln!("lysosome mcp: could not read stdin: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        // Invalid UTF-8 becomes a parse error reply, not a silent exit.
+        let line = String::from_utf8_lossy(&buf);
         if line.trim().is_empty() {
             continue;
         }
@@ -63,6 +75,11 @@ pub fn serve() -> ExitCode {
 /// One line in, at most one line out (notifications get no reply).
 fn handle_line(line: &str) -> Option<Value> {
     match serde_json::from_str::<Value>(line) {
+        Ok(Value::Array(batch)) if batch.is_empty() => Some(error_reply(
+            Value::Null,
+            -32600,
+            "invalid request: empty batch",
+        )),
         Ok(Value::Array(batch)) => {
             let replies: Vec<Value> = batch.iter().filter_map(handle).collect();
             (!replies.is_empty()).then_some(Value::Array(replies))
@@ -77,9 +94,30 @@ fn handle_line(line: &str) -> Option<Value> {
 }
 
 fn handle(msg: &Value) -> Option<Value> {
+    if !msg.is_object() {
+        return Some(error_reply(
+            Value::Null,
+            -32600,
+            "invalid request: not an object",
+        ));
+    }
     let id = msg.get("id").cloned();
+    // JSON-RPC ids are strings or numbers; a null id can't be answered usefully.
+    if id
+        .as_ref()
+        .is_some_and(|i| !(i.is_string() || i.is_number()))
+    {
+        return Some(error_reply(
+            Value::Null,
+            -32600,
+            "invalid request: id must be a string or number",
+        ));
+    }
     let Some(method) = msg.get("method").and_then(Value::as_str) else {
-        // A response to us (we never ask) or junk with an id.
+        // A response (we never send requests, so ignore it), or junk with an id.
+        if msg.get("result").is_some() || msg.get("error").is_some() {
+            return None;
+        }
         return id.map(|id| error_reply(id, -32600, "invalid request: no method"));
     };
     // Notifications (initialized, cancelled...) need no answer.
@@ -166,12 +204,11 @@ fn tools() -> Value {
         "all".into(),
         json!({ "type": "boolean", "description": "Also list ACTIVE items." }),
     );
-    let mut wt = scan.clone();
+    let wt = scan.clone();
     scan.insert(
         "no_system".into(),
         json!({ "type": "boolean", "description": "Skip machine-wide caches, AI models, Docker, Xcode, Android and editor data." }),
     );
-    wt.remove("no_system");
 
     let mut caches = Map::new();
     caches.insert(
@@ -218,7 +255,7 @@ fn tools() -> Value {
     );
     clean.insert(
         "confirm".into(),
-        json!({ "type": "boolean", "description": "Actually clean the items in only. Without it nothing is changed and the plan is returned. Ask the user first." }),
+        json!({ "type": "boolean", "description": "Actually clean the items in only. Without it nothing is changed and the plan is returned. Ask the user first, and repeat the dry run's other arguments." }),
     );
 
     json!([
@@ -242,7 +279,7 @@ fn tools() -> Value {
         },
         {
             "name": "clean",
-            "description": "Clean up safely. Without confirm it is a dry run that returns the plan (schema/clean.schema.json) and changes nothing. With confirm: true and exact item ids in only, it cleans just those items: each is re-checked first, files go to the Trash, dirty, unpushed or REVIEW items are never touched. Show the plan to the user and get their OK before confirming.",
+            "description": "Clean up safely. Without confirm it is a dry run that returns the plan (schema/clean.schema.json) and changes nothing. With confirm: true and exact item ids in only, it cleans just those items (pass the same roots, days, depth, tier and scope as the dry run, because the items are found again): each is re-checked first, files go to the Trash, dirty, unpushed or REVIEW items are never touched. Show the plan to the user and get their OK before confirming.",
             "inputSchema": object(clean),
             "annotations": {
                 "title": "Clean up reclaimable disk",
@@ -317,6 +354,8 @@ fn run_argv(argv: Vec<OsString>) -> Value {
         Some(Command::Clean(a)) => clean::run(a, &cli.global).map(|o| (o.text, o.failed)),
         _ => unreachable!("build_argv only builds the four tools"),
     }));
+    // clean installs a Ctrl-C handler for its run; this process outlives it.
+    clean::reset_sigint();
     match ran {
         Ok(Ok((text, failed))) => tool_result(text, failed),
         Ok(Err(e)) => tool_result(errors::json(&errors::describe(&e)), true),
@@ -329,35 +368,14 @@ fn run_argv(argv: Vec<OsString>) -> Value {
 }
 
 fn build_argv(tool: &str, args: &Map<String, Value>) -> Result<Vec<OsString>, String> {
-    let allowed: &[&str] = match tool {
-        "scan" => &[
-            "roots",
-            "days",
-            "depth",
-            "no_gh",
-            "offline",
-            "all",
-            "no_system",
-        ],
-        "worktrees" => &["roots", "days", "depth", "no_gh", "offline", "all"],
-        "caches" => &["categories"],
-        _ => &[
-            "roots",
-            "days",
-            "depth",
-            "no_gh",
-            "offline",
-            "worktrees",
-            "artifacts",
-            "caches",
-            "strip_artifacts",
-            "tier",
-            "older_than",
-            "only",
-            "confirm",
-        ],
-    };
-    if let Some(k) = args.keys().find(|k| !allowed.contains(&k.as_str())) {
+    // The advertised inputSchema is the allow-list.
+    let tools = tools();
+    let props = tools
+        .as_array()
+        .and_then(|ts| ts.iter().find(|t| t["name"] == tool))
+        .and_then(|t| t["inputSchema"]["properties"].as_object())
+        .ok_or(format!("unknown tool `{tool}`"))?;
+    if let Some(k) = args.keys().find(|k| !props.contains_key(k.as_str())) {
         return Err(format!("{tool} has no argument `{k}`"));
     }
     let mut v: Vec<String> = vec![
@@ -451,11 +469,12 @@ fn strings(args: &Map<String, Value>, key: &str) -> Result<Vec<String>, String> 
     }
 }
 
-/// `<kind>:<path>` with no glob characters, so it can match only itself.
+/// `<kind>:<path>` without `*` or `?` (the only wildcards `--only` knows),
+/// so it can match only itself.
 fn is_exact_id(s: &str) -> bool {
     s.split_once(':')
         .is_some_and(|(kind, path)| !kind.is_empty() && !path.is_empty())
-        && !s.contains(['*', '?', '['])
+        && !s.contains(['*', '?'])
 }
 
 /// Clients pass `~/code`; no shell expands it here.
@@ -478,11 +497,30 @@ mod tests {
     }
 
     #[test]
+    fn invalid_messages_get_an_error_and_responses_none() {
+        let code = |line: &str| handle_line(line).map(|r| r["error"]["code"].clone());
+        assert_eq!(code("[]"), Some(json!(-32600)));
+        assert_eq!(code("{not json"), Some(json!(-32700)));
+        assert_eq!(
+            code(r#"{"jsonrpc":"2.0","id":null,"method":"ping"}"#),
+            Some(json!(-32600))
+        );
+        let batch = handle_line("[1]").unwrap();
+        assert_eq!(batch[0]["error"]["code"], -32600);
+        assert_eq!(handle_line(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#), None);
+        assert_eq!(
+            handle_line(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#),
+            None
+        );
+    }
+
+    #[test]
     fn exact_ids_only() {
         assert!(is_exact_id("node_modules:/a/b/node_modules"));
         assert!(!is_exact_id("node_modules"));
         assert!(!is_exact_id("npm*"));
         assert!(!is_exact_id("worktree:/a/*"));
+        assert!(is_exact_id("node_modules:/code/foo[1]/node_modules"));
         assert!(!is_exact_id(":/a"));
     }
 

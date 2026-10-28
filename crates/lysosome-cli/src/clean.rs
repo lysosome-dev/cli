@@ -467,6 +467,16 @@ fn install_sigint() {
     }
 }
 
+/// Undo `install_sigint` for a process that outlives one cleanup (`lysosome
+/// mcp`): Ctrl-C ends the process again and the next cleanup starts unstopped.
+pub fn reset_sigint() {
+    // SAFETY: restores the default disposition.
+    unsafe {
+        libc::signal(libc::SIGINT, libc::SIG_DFL);
+    }
+    STOP.store(false, Ordering::SeqCst);
+}
+
 fn print_now(s: &str) {
     let mut out = std::io::stdout().lock();
     let _ = out.write_all(s.as_bytes());
