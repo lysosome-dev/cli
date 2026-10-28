@@ -78,6 +78,11 @@ pub struct CleanArgs {
     #[arg(long, value_name = "ID|GLOB")]
     pub only: Vec<String>,
 
+    /// Keep only items whose id equals an --only value (no kinds, names or
+    /// globs). Used by `lysosome mcp` for confirmed cleans
+    #[arg(long, hide = true, requires = "only", conflicts_with = "interactive")]
+    pub only_exact: bool,
+
     /// Pick items in a terminal checklist, then confirm (needs a terminal)
     #[arg(long, short = 'i', conflicts_with = "json")]
     pub interactive: bool,
@@ -258,6 +263,16 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
             keep_nested: args.interactive,
         },
     );
+    if args.only_exact {
+        let picked = plan
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| args.only.contains(&i.id))
+            .map(|(n, _)| n)
+            .collect();
+        plan = plan.subset(&picked, &sel.tiers);
+    }
     let p = Painter::new(ui::color_enabled(global.no_color, ui::stdout_is_tty()));
     let nothing_changed = |lead: &str| CleanOutput {
         text: format!(
@@ -386,7 +401,7 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
     }
     // Ctrl-C: finish (and log) the current item, then stop. A second Ctrl-C
     // exits at once.
-    install_sigint();
+    let _sigint = SigintGuard::install();
     ex.stop = Some(&STOP);
     let stream = !args.json;
     let events = spinner.as_ref().and_then(Reporter::json);
@@ -457,24 +472,35 @@ extern "C" fn on_sigint(_: libc::c_int) {
     }
 }
 
-fn install_sigint() {
-    // SAFETY: installs a handler that only touches an atomic (or _exits).
-    unsafe {
-        libc::signal(
-            libc::SIGINT,
-            on_sigint as extern "C" fn(libc::c_int) as libc::sighandler_t,
-        );
+/// Our Ctrl-C handler for one cleanup. Dropping it restores whatever was
+/// there before and clears the stop flag, so a process that outlives the
+/// cleanup (`lysosome mcp`) behaves as it did before.
+struct SigintGuard(libc::sighandler_t);
+
+impl SigintGuard {
+    fn install() -> Self {
+        STOP.store(false, Ordering::SeqCst);
+        // SAFETY: installs a handler that only touches an atomic (or _exits).
+        let prev = unsafe {
+            libc::signal(
+                libc::SIGINT,
+                on_sigint as extern "C" fn(libc::c_int) as libc::sighandler_t,
+            )
+        };
+        SigintGuard(prev)
     }
 }
 
-/// Undo `install_sigint` for a process that outlives one cleanup (`lysosome
-/// mcp`): Ctrl-C ends the process again and the next cleanup starts unstopped.
-pub fn reset_sigint() {
-    // SAFETY: restores the default disposition.
-    unsafe {
-        libc::signal(libc::SIGINT, libc::SIG_DFL);
+impl Drop for SigintGuard {
+    fn drop(&mut self) {
+        if self.0 != libc::SIG_ERR {
+            // SAFETY: puts back the disposition `install` replaced.
+            unsafe {
+                libc::signal(libc::SIGINT, self.0);
+            }
+        }
+        STOP.store(false, Ordering::SeqCst);
     }
-    STOP.store(false, Ordering::SeqCst);
 }
 
 fn print_now(s: &str) {

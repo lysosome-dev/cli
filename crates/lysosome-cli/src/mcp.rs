@@ -10,6 +10,7 @@
 use std::ffi::OsString;
 use std::io::{BufRead, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::Path;
 use std::process::ExitCode;
 
 use clap::{Args, Parser};
@@ -35,7 +36,7 @@ pub struct McpArgs {}
 pub fn serve() -> ExitCode {
     // Cleanups through MCP are attributed in the action log unless the
     // client already says who it is. Set before any thread exists.
-    if std::env::var_os("LYSOSOME_ACTOR").is_none() {
+    if std::env::var_os("LYSOSOME_ACTOR").is_none_or(|a| a.is_empty()) {
         std::env::set_var("LYSOSOME_ACTOR", "mcp");
     }
     let mut stdin = std::io::stdin().lock();
@@ -354,8 +355,6 @@ fn run_argv(argv: Vec<OsString>) -> Value {
         Some(Command::Clean(a)) => clean::run(a, &cli.global).map(|o| (o.text, o.failed)),
         _ => unreachable!("build_argv only builds the four tools"),
     }));
-    // clean installs a Ctrl-C handler for its run; this process outlives it.
-    clean::reset_sigint();
     match ran {
         Ok(Ok((text, failed))) => tool_result(text, failed),
         Ok(Err(e)) => tool_result(errors::json(&errors::describe(&e)), true),
@@ -429,20 +428,26 @@ fn build_argv(tool: &str, args: &Map<String, Value>) -> Result<Vec<OsString>, St
                 "`{bad}` is not an item id; with confirm, `only` takes exact ids like \"node_modules:/path/to/project/node_modules\", no globs"
             ));
         }
+        // --only also matches kinds, names and globs; with --only-exact the
+        // plan keeps just the items whose id is listed.
         v.push("--yes".into());
+        v.push("--only-exact".into());
     }
     for o in &only {
         v.push(format!("--only={o}"));
     }
+    let mut v: Vec<OsString> = v.into_iter().map(OsString::from).collect();
     let roots = strings(args, "roots")?;
     if !roots.is_empty() {
-        let home = dirs::home_dir();
+        // Clients pass `~/code`; no shell expands it here.
         v.push("--".into());
-        for r in roots {
-            v.push(expand_home(&r, home.as_deref()));
-        }
+        v.extend(
+            roots
+                .iter()
+                .map(|r| crate::expand_tilde(Path::new(r)).into_os_string()),
+        );
     }
-    Ok(v.into_iter().map(OsString::from).collect())
+    Ok(v)
 }
 
 fn flag(args: &Map<String, Value>, key: &str) -> Result<bool, String> {
@@ -469,22 +474,12 @@ fn strings(args: &Map<String, Value>, key: &str) -> Result<Vec<String>, String> 
     }
 }
 
-/// `<kind>:<path>` without `*` or `?` (the only wildcards `--only` knows),
-/// so it can match only itself.
+/// Shaped like an item id, `<kind>:<path>`, to catch a bare kind or name
+/// passed by mistake. Matching itself is exact (`--only-exact`), so `*` and
+/// `?` in a real path are fine.
 fn is_exact_id(s: &str) -> bool {
     s.split_once(':')
         .is_some_and(|(kind, path)| !kind.is_empty() && !path.is_empty())
-        && !s.contains(['*', '?'])
-}
-
-/// Clients pass `~/code`; no shell expands it here.
-fn expand_home(r: &str, home: Option<&std::path::Path>) -> String {
-    match (r.strip_prefix('~'), home) {
-        (Some(rest), Some(h)) if rest.is_empty() || rest.starts_with('/') => {
-            format!("{}{rest}", h.display())
-        }
-        _ => r.to_string(),
-    }
 }
 
 #[cfg(test)]
@@ -519,7 +514,8 @@ mod tests {
         assert!(is_exact_id("node_modules:/a/b/node_modules"));
         assert!(!is_exact_id("node_modules"));
         assert!(!is_exact_id("npm*"));
-        assert!(!is_exact_id("worktree:/a/*"));
+        assert!(is_exact_id("node_modules:/code/what?/node_modules"));
+        assert!(is_exact_id("docker-image:docker://image/abc"));
         assert!(is_exact_id("node_modules:/code/foo[1]/node_modules"));
         assert!(!is_exact_id(":/a"));
     }
@@ -537,6 +533,7 @@ mod tests {
         .unwrap();
         assert!(a.contains(&"--yes".to_string()));
         assert!(a.contains(&"--only=target:/x/target".to_string()));
+        assert!(a.contains(&"--only-exact".to_string()));
     }
 
     #[test]
