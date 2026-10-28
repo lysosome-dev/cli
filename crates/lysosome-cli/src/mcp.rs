@@ -36,7 +36,13 @@ pub struct McpArgs {}
 pub fn serve() -> ExitCode {
     // Cleanups through MCP are attributed in the action log unless the
     // client already says who it is. Set before any thread exists.
-    if std::env::var_os("LYSOSOME_ACTOR").is_none_or(|a| a.is_empty()) {
+    // The action log drops actors outside [a-z0-9._-]{1,32}; use ours then.
+    let valid = |a: &str| {
+        (1..=32).contains(&a.len())
+            && a.bytes()
+                .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
+    };
+    if !std::env::var("LYSOSOME_ACTOR").is_ok_and(|a| valid(&a)) {
         std::env::set_var("LYSOSOME_ACTOR", "mcp");
     }
     let mut stdin = std::io::stdin().lock();
@@ -195,8 +201,9 @@ fn object(props: Map<String, Value>) -> Value {
     json!({ "type": "object", "properties": props, "additionalProperties": false })
 }
 
-fn read_only(title: &str) -> Value {
-    json!({ "title": title, "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false })
+/// `open_world`: may ask GitHub through `gh` (off with no_gh / offline).
+fn read_only(title: &str, open_world: bool) -> Value {
+    json!({ "title": title, "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": open_world })
 }
 
 fn tools() -> Value {
@@ -264,19 +271,19 @@ fn tools() -> Value {
             "name": "scan",
             "description": "Find reclaimable disk: idle project artifacts, dormant git worktrees, package caches, AI models, Docker and Xcode data. Read-only. Returns the versioned lysosome report (schema/lysosome.schema.json); findings carry id, size_bytes, tier and status.",
             "inputSchema": object(scan),
-            "annotations": read_only("Scan for reclaimable disk"),
+            "annotations": read_only("Scan for reclaimable disk", true),
         },
         {
             "name": "worktrees",
             "description": "Find dormant git worktrees and the disk they hold, with REMOVABLE / REVIEW / ORPHAN / ACTIVE status. Read-only. Same report format as scan.",
             "inputSchema": object(wt),
-            "annotations": read_only("Find dormant git worktrees"),
+            "annotations": read_only("Find dormant git worktrees", true),
         },
         {
             "name": "caches",
             "description": "Find machine-wide package caches, AI models, Docker, Xcode, Android and editor data. Read-only. Same report format as scan.",
             "inputSchema": object(caches),
-            "annotations": read_only("Find caches and models"),
+            "annotations": read_only("Find caches and models", false),
         },
         {
             "name": "clean",
@@ -287,7 +294,7 @@ fn tools() -> Value {
                 "readOnlyHint": false,
                 "destructiveHint": true,
                 "idempotentHint": false,
-                "openWorldHint": false
+                "openWorldHint": true
             },
         }
     ])
@@ -438,14 +445,20 @@ fn build_argv(tool: &str, args: &Map<String, Value>) -> Result<Vec<OsString>, St
     }
     let mut v: Vec<OsString> = v.into_iter().map(OsString::from).collect();
     let roots = strings(args, "roots")?;
+    // The server's working directory is the client's business, so a
+    // relative root would scan an arbitrary folder. `~` is expanded later,
+    // as on the command line.
+    if let Some(r) = roots
+        .iter()
+        .find(|r| !(Path::new(r).is_absolute() || *r == "~" || r.starts_with("~/")))
+    {
+        return Err(format!(
+            "root `{r}` must be an absolute path or start with ~/"
+        ));
+    }
     if !roots.is_empty() {
-        // Clients pass `~/code`; no shell expands it here.
         v.push("--".into());
-        v.extend(
-            roots
-                .iter()
-                .map(|r| crate::expand_tilde(Path::new(r)).into_os_string()),
-        );
+        v.extend(roots.iter().map(OsString::from));
     }
     Ok(v)
 }
@@ -545,10 +558,11 @@ mod tests {
     }
 
     #[test]
-    fn roots_follow_a_double_dash_and_expand_tilde() {
-        let a = argv("scan", json!({ "roots": ["--yes", "~/code"] })).unwrap();
+    fn roots_are_absolute_and_follow_a_double_dash() {
+        let a = argv("scan", json!({ "roots": ["/--yes", "~/code"] })).unwrap();
         let dd = a.iter().position(|s| s == "--").unwrap();
-        assert_eq!(a[dd + 1], "--yes");
-        assert!(!a[dd + 2].starts_with('~'));
+        assert_eq!(a[dd + 1..], ["/--yes", "~/code"]);
+        assert!(argv("scan", json!({ "roots": ["code"] })).is_err());
+        assert!(argv("scan", json!({ "roots": ["--yes"] })).is_err());
     }
 }

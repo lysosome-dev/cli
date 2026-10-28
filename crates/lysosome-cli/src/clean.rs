@@ -264,6 +264,25 @@ pub fn run(args: &CleanArgs, global: &GlobalArgs) -> Result<CleanOutput> {
         },
     );
     if args.only_exact {
+        // Every listed id must be in this plan: a confirmed clean that finds
+        // less than it was told about stops instead of half-succeeding.
+        let missing: Vec<&String> = args
+            .only
+            .iter()
+            .filter(|o| !plan.items.iter().any(|i| &i.id == *o))
+            .collect();
+        if !missing.is_empty() {
+            return Err(errors::fail(
+                "not_planned",
+                format!(
+                    "{} of the given ids {} not in the plan: {}",
+                    missing.len(),
+                    if missing.len() == 1 { "is" } else { "are" },
+                    missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                ),
+                "repeat the dry run's roots, days, depth, tier and scope; items that changed or became REVIEW are left out",
+            ));
+        }
         let picked = plan
             .items
             .iter()

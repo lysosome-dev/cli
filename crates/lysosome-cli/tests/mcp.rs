@@ -224,12 +224,19 @@ fn clean_changes_nothing_without_confirm_and_exact_ids() {
             "clean",
             json!({ "roots": [code], "only": ["target"], "offline": true }),
         ),
-        // Shaped like an id but a glob for --only: matched exactly, so nothing.
+        // Shaped like an id but a glob for --only: matched exactly, so not planned.
         call(
             8,
             "clean",
             json!({ "roots": [code], "artifacts": true, "offline": true,
                     "confirm": true, "only": ["target:*"] }),
+        ),
+        // An id this plan doesn't have stops the whole call.
+        call(
+            9,
+            "clean",
+            json!({ "roots": [code], "artifacts": true, "offline": true,
+                    "confirm": true, "only": ["target:/nowhere/target"] }),
         ),
     ]);
     let (plan, is_error) = result_doc(&r[&2]);
@@ -248,9 +255,11 @@ fn clean_changes_nothing_without_confirm_and_exact_ids() {
     // A glob is fine for a dry run.
     let (doc, is_error) = result_doc(&r[&7]);
     assert!(!is_error && doc["mode"] == "dry_run", "{doc:#}");
-    let (doc, is_error) = result_doc(&r[&8]);
-    assert!(!is_error, "{doc:#}");
-    assert!(doc["items"].as_array().unwrap().is_empty(), "{doc:#}");
+    for id in [8, 9] {
+        let (doc, is_error) = result_doc(&r[&id]);
+        assert!(is_error, "call {id}: {doc:#}");
+        assert_eq!(doc["error"]["code"], "not_planned", "{doc:#}");
+    }
     assert!(target.exists(), "nothing was cleaned");
     assert!(!fx.p("fake-trash").exists() || fs::read_dir(fx.p("fake-trash")).unwrap().count() == 0);
 }
