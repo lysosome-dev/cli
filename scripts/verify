@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Local CI: runs the same checks as .github/workflows/ci.yml (fmt, clippy, test,
+# doc tests, cargo-deny). No network side effects beyond cargo fetching crates.
+# Flags: --fast  skip cargo-deny.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+fast=0
+[ "${1:-}" = "--fast" ] && fast=1
+
+command -v cargo >/dev/null 2>&1 || { echo "error: cargo (Rust toolchain) not found; install via https://rustup.rs" >&2; exit 1; }
+
+export RUSTFLAGS="${RUSTFLAGS:--D warnings}"
+
+echo "==> fmt"
+cargo fmt --all --check
+
+echo "==> clippy"
+cargo clippy --workspace --all-targets -- -D warnings
+
+echo "==> test"
+cargo test --workspace --all-targets
+
+echo "==> doc tests"
+cargo test --workspace --doc
+
+if [ "$fast" -eq 1 ]; then
+  echo "==> cargo-deny (skipped: --fast)"
+elif command -v cargo-deny >/dev/null 2>&1; then
+  echo "==> cargo-deny"
+  cargo deny --all-features check
+else
+  echo "==> cargo-deny (skipped: cargo-deny not installed; CI runs it)"
+fi
+
+echo "verify: all checks passed"
