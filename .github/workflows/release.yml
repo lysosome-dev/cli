@@ -68,6 +68,8 @@ jobs:
       - name: Cache dist
         uses: actions/upload-artifact@v7
         with:
+          # Consumed by later jobs in this same run; the Release holds the assets.
+          retention-days: 1
           name: cargo-dist-cache
           path: ~/.cargo/bin/dist
       # sure would be cool if github gave us proper conditionals...
@@ -84,6 +86,8 @@ jobs:
       - name: "Upload dist-manifest.json"
         uses: actions/upload-artifact@v7
         with:
+          # Consumed by later jobs in this same run; the Release holds the assets.
+          retention-days: 1
           name: artifacts-plan-dist-manifest
           path: plan-dist-manifest.json
 
@@ -163,6 +167,8 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v7
         with:
+          # Consumed by later jobs in this same run; the Release holds the assets.
+          retention-days: 1
           name: artifacts-build-local-${{ join(matrix.targets, '_') }}
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
@@ -210,6 +216,8 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v7
         with:
+          # Consumed by later jobs in this same run; the Release holds the assets.
+          retention-days: 1
           name: artifacts-build-global
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
@@ -255,6 +263,8 @@ jobs:
       - name: "Upload dist-manifest.json"
         uses: actions/upload-artifact@v7
         with:
+          # Consumed by later jobs in this same run; the Release holds the assets.
+          retention-days: 1
           # Overwrite the previous copy
           name: artifacts-dist-manifest
           path: dist-manifest.json

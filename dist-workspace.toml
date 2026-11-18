@@ -6,6 +6,9 @@ members = ["cargo:."]
 [dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
 cargo-dist-version = "0.33.0"
+# release.yml is hand-edited to set retention-days on upload-artifact steps
+# (dist has no option for it); keep that edit when regenerating.
+allow-dirty = ["ci"]
 # CI backends to support
 ci = "github"
 # The installers to generate for each app. `lysosome-installer.sh` is what
