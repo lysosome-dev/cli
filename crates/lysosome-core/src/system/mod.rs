@@ -478,7 +478,7 @@ pub(crate) fn parse_human_bytes(s: &str) -> Option<u64> {
 /// or `2026-04-04 00:19:24.806932346 +0000 UTC`. Also accepts RFC 3339.
 pub(crate) fn parse_timestamp(s: &str) -> Option<SystemTime> {
     let s = s.trim();
-    if let Ok(t) = humantime::parse_rfc3339_weak(s) {
+    if let Ok(t) = crate::rfc3339::parse(s) {
         return Some(t);
     }
     let mut parts = s.split_whitespace();
@@ -560,20 +560,11 @@ mod tests {
     #[test]
     fn parses_docker_timestamps() {
         let t = parse_timestamp("2026-07-01 06:00:00 -0400 EDT").unwrap();
-        assert_eq!(
-            humantime::format_rfc3339_seconds(t).to_string(),
-            "2026-07-01T10:00:00Z"
-        );
+        assert_eq!(crate::rfc3339::format(t), "2026-07-01T10:00:00Z");
         let t = parse_timestamp("2026-04-04 00:19:24.806932346 +0000 UTC").unwrap();
-        assert_eq!(
-            humantime::format_rfc3339_seconds(t).to_string(),
-            "2026-04-04T00:19:24Z"
-        );
+        assert_eq!(crate::rfc3339::format(t), "2026-04-04T00:19:24Z");
         let t = parse_timestamp("2026-09-27T22:36:43Z").unwrap();
-        assert_eq!(
-            humantime::format_rfc3339_seconds(t).to_string(),
-            "2026-09-27T22:36:43Z"
-        );
+        assert_eq!(crate::rfc3339::format(t), "2026-09-27T22:36:43Z");
         assert!(parse_timestamp("garbage").is_none());
     }
 

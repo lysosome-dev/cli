@@ -131,8 +131,7 @@ pub(super) fn docker_items(v: &Value) -> Vec<Item> {
             .unwrap_or(0);
         // Docker doesn't report when an image was last used; CreatedAt is the
         // build time, so it goes in details rather than last_activity.
-        let created = parse_timestamp(s(img, "CreatedAt"))
-            .map(|t| humantime::format_rfc3339_seconds(t).to_string());
+        let created = parse_timestamp(s(img, "CreatedAt")).map(crate::rfc3339::format);
         let mut item = Item::new(
             "docker-image",
             CAT,
