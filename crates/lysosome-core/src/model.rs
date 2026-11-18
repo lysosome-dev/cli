@@ -315,14 +315,14 @@ mod rfc3339_opt {
 
     pub fn serialize<S: Serializer>(t: &Option<SystemTime>, s: S) -> Result<S::Ok, S::Error> {
         match t {
-            Some(t) => s.collect_str(&humantime::format_rfc3339_seconds(*t)),
+            Some(t) => s.collect_str(&crate::rfc3339::format(*t)),
             None => s.serialize_none(),
         }
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<SystemTime>, D::Error> {
         let raw: Option<String> = Option::deserialize(d)?;
-        raw.map(|r| humantime::parse_rfc3339_weak(&r).map_err(serde::de::Error::custom))
+        raw.map(|r| crate::rfc3339::parse(&r).map_err(serde::de::Error::custom))
             .transpose()
     }
 }
