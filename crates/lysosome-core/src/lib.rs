@@ -25,6 +25,7 @@ pub mod git;
 pub mod model;
 pub mod progress;
 pub mod projects;
+pub(crate) mod rfc3339;
 pub mod size;
 pub mod system;
 pub mod walk;

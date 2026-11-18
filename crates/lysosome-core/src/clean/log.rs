@@ -86,7 +86,7 @@ impl ActionLog {
     /// that is killed half-way leaves a trace.
     pub fn record_attempt(&self, item: &PlanItem) -> std::io::Result<()> {
         self.write(json!({
-            "ts": humantime::format_rfc3339_seconds(SystemTime::now()).to_string(),
+            "ts": crate::rfc3339::format(SystemTime::now()),
             "tool_version": TOOL_VERSION,
             "id": item.id,
             "category": item.category,
@@ -103,7 +103,7 @@ impl ActionLog {
     /// Append the outcome of `item` and flush it to disk.
     pub fn record(&self, item: &PlanItem, result: &ItemResult) -> std::io::Result<()> {
         let entry = json!({
-            "ts": humantime::format_rfc3339_seconds(SystemTime::now()).to_string(),
+            "ts": crate::rfc3339::format(SystemTime::now()),
             "tool_version": TOOL_VERSION,
             "id": item.id,
             "category": item.category,
